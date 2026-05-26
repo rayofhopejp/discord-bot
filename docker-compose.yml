@@ -13,12 +13,12 @@ services:
     build: .
     volumes:
       - ./bot:/usr/src/app:rw
+      - ./serifu.txt:/usr/src/serifu.txt:ro
     environment:
       - TOKEN=${TOKEN}
       - AWS_REGION=${AWS_REGION}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - SERIFU=${SERIFU}
       - DATABASE_URL=postgresql://bot:botpass@db:5432/discord_bot
     command: ["python3", "main.py"]
     depends_on:
