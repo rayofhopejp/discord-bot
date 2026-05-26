@@ -19,6 +19,9 @@ Parameters:
     Type: String
     Default: ""
     Description: Comma-separated list of allowed Discord channel IDs
+  BotImageUri:
+    Type: String
+    Description: Full ECR image URI (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/discord-bot:latest)
 
 Resources:
   # VPC
@@ -88,12 +91,6 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
-
-  # ECR
-  BotRepository:
-    Type: AWS::ECR::Repository
-    Properties:
-      RepositoryName: !Sub "${AWS::StackName}-bot"
 
   # ECS Cluster
   ECSCluster:
@@ -167,7 +164,7 @@ Resources:
               awslogs-stream-prefix: db
 
         - Name: bot
-          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${BotRepository}:latest"
+          Image: !Ref BotImageUri
           Essential: true
           DependsOn:
             - ContainerName: db
@@ -208,7 +205,5 @@ Resources:
 Outputs:
   ClusterName:
     Value: !Ref ECSCluster
-  BotRepositoryUri:
-    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${BotRepository}"
   ServiceName:
     Value: !GetAtt BotService.Name
