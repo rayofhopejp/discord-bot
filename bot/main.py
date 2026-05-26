@@ -120,4 +120,6 @@ async def on_message(message):
     for i in range(0, len(reply), 2000):
         await message.reply(reply[i:i+2000])
 
+print(f"TOKEN set: {TOKEN is not None and len(TOKEN) > 0}")
+print("Starting bot...")
 client.run(TOKEN)
