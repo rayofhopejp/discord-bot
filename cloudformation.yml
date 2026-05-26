@@ -15,6 +15,10 @@ Parameters:
     NoEcho: true
     Default: botpass
     Description: PostgreSQL password
+  AllowedChannels:
+    Type: String
+    Default: ""
+    Description: Comma-separated list of allowed Discord channel IDs
 
 Resources:
   # VPC
@@ -175,6 +179,8 @@ Resources:
               Value: !Ref AwsRegionName
             - Name: DATABASE_URL
               Value: !Sub "postgresql://bot:${DbPassword}@localhost:5432/discord_bot"
+            - Name: ALLOWED_CHANNELS
+              Value: !Ref AllowedChannels
           LogConfiguration:
             LogDriver: awslogs
             Options:
