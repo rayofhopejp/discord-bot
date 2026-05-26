@@ -88,7 +88,7 @@ def ask_claude(user_id, channel_id, prompt):
         body["system"] = "\n\n---\n\n".join(system_parts)
 
     response = bedrock.invoke_model(
-        modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
+        modelId='global.anthropic.claude-sonnet-4-6',
         body=json.dumps(body)
     )
     result = json.loads(response['body'].read())
