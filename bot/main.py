@@ -10,7 +10,8 @@ load_dotenv('../.env')
 
 TOKEN = os.getenv('TOKEN')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-SERIFU = os.getenv('SERIFU', '')
+SERIFU_PATH = '/usr/src/serifu.txt'
+SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ''
 DATABASE_URL = os.getenv('DATABASE_URL')
 
 intents = discord.Intents.default()
