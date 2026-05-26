@@ -13,6 +13,7 @@ AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 SERIFU_PATH = '/usr/src/serifu.txt'
 SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ''
 DATABASE_URL = os.getenv('DATABASE_URL')
+ALLOWED_CHANNELS = [ch.strip() for ch in os.getenv('ALLOWED_CHANNELS', '').split(',') if ch.strip()]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -118,6 +119,8 @@ async def on_ready():
 @client.event
 async def on_message(message):
     if message.author.bot:
+        return
+    if ALLOWED_CHANNELS and str(message.channel.id) not in ALLOWED_CHANNELS:
         return
 
     user_id = str(message.author.id)
