@@ -71,7 +71,7 @@ def ask_claude(user_id, channel_id, prompt):
 
     system_parts = []
     if SERIFU:
-        system_parts.append(f"以下のセリフを参考にして、そのキャラクターになりきって返答してください。\n\n{SERIFU}")
+        system_parts.append(f"以下のセリフを参考にして、そのキャラクターになりきって返答してください。ただし、1-2行に収まるくらい短く返すこと。\n\n{SERIFU}")
     if user_msgs:
         system_parts.append(f"このユーザーの過去の発言一覧:\n" + "\n".join(user_msgs[-50:]))
 
@@ -122,7 +122,7 @@ async def on_message(message):
         save_message(user_id, 'assistant', reply, channel_id)
 
         for i in range(0, len(reply), 2000):
-            await message.reply(reply[i:i+2000])
+            await message.channel.send(reply[i:i+2000])
     except Exception as e:
         print(f"エラー: {traceback.format_exc()}")
 
