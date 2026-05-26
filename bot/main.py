@@ -117,7 +117,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author.bot or msg.channel.id != os.getenv('CHANNEL'):
         return
 
     user_id = str(message.author.id)
