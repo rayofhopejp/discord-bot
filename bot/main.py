@@ -2,6 +2,7 @@ import discord
 import os
 import json
 import sqlite3
+import traceback
 import boto3
 from dotenv import load_dotenv
 
@@ -107,19 +108,22 @@ async def on_message(message):
     if ALLOWED_CHANNELS and str(message.channel.id) not in ALLOWED_CHANNELS:
         return
 
-    user_id = str(message.author.id)
-    channel_id = str(message.channel.id)
+    print(f"メッセージ受信: {message.content[:50]}")
 
-    save_message(user_id, 'user', message.content, channel_id)
+    try:
+        user_id = str(message.author.id)
+        channel_id = str(message.channel.id)
 
-    async with message.channel.typing():
-        reply = ask_claude(user_id, channel_id, message.content)
+        save_message(user_id, 'user', message.content, channel_id)
 
-    save_message(user_id, 'assistant', reply, channel_id)
+        async with message.channel.typing():
+            reply = ask_claude(user_id, channel_id, message.content)
 
-    for i in range(0, len(reply), 2000):
-        await message.reply(reply[i:i+2000])
+        save_message(user_id, 'assistant', reply, channel_id)
 
-print(f"TOKEN set: {TOKEN is not None and len(TOKEN) > 0}")
-print("Starting bot...")
+        for i in range(0, len(reply), 2000):
+            await message.reply(reply[i:i+2000])
+    except Exception as e:
+        print(f"エラー: {traceback.format_exc()}")
+
 client.run(TOKEN)
