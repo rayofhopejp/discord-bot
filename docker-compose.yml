@@ -1,29 +1,19 @@
 version: '3.8'
 services:
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_USER=bot
-      - POSTGRES_PASSWORD=botpass
-      - POSTGRES_DB=discord_bot
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
   bot:
     build: .
     volumes:
       - ./bot:/usr/src/app:rw
       - ./serifu.txt:/usr/src/serifu.txt:ro
+      - botdata:/usr/src/app/data
     environment:
       - TOKEN=${TOKEN}
       - AWS_REGION=${AWS_REGION}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - DATABASE_URL=postgresql://bot:botpass@db:5432/discord_bot
+      - ALLOWED_CHANNELS=${ALLOWED_CHANNELS}
     command: ["python3", "main.py"]
-    depends_on:
-      - db
     tty: true
 
 volumes:
-  pgdata:
+  botdata:
