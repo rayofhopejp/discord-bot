@@ -1,9 +1,8 @@
 import discord
 import os
 import json
-import time
+import sqlite3
 import boto3
-import psycopg2
 from dotenv import load_dotenv
 
 load_dotenv('../.env')
@@ -12,8 +11,8 @@ TOKEN = os.getenv('TOKEN')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 SERIFU_PATH = '/usr/src/serifu.txt'
 SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ''
-DATABASE_URL = os.getenv('DATABASE_URL')
 ALLOWED_CHANNELS = [ch.strip() for ch in os.getenv('ALLOWED_CHANNELS', '').split(',') if ch.strip()]
+DB_PATH = os.getenv('DB_PATH', '/usr/src/app/data/messages.db')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -22,61 +21,46 @@ client = discord.Client(intents=intents)
 bedrock = boto3.client('bedrock-runtime', region_name=AWS_REGION)
 
 
-def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = True
-    return conn
-
-
 def init_db():
-    for _ in range(10):
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id SERIAL PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    channel_id TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            cur.close()
-            conn.close()
-            return
-        except psycopg2.OperationalError:
-            time.sleep(2)
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 
 def save_message(user_id, role, content, channel_id):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO messages (user_id, role, content, channel_id) VALUES (%s, %s, %s, %s)",
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO messages (user_id, role, content, channel_id) VALUES (?, ?, ?, ?)",
         (user_id, role, content, channel_id)
     )
-    cur.close()
+    conn.commit()
     conn.close()
 
 
 def get_context(user_id, channel_id):
-    conn = get_db()
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    # 最近20件（チャンネル内）
     cur.execute(
-        "SELECT role, content FROM messages WHERE channel_id = %s ORDER BY created_at DESC LIMIT 20",
+        "SELECT role, content FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 20",
         (channel_id,)
     )
     recent = cur.fetchall()[::-1]
-    # そのユーザーの全メッセージ（user roleのみ）
     cur.execute(
-        "SELECT content FROM messages WHERE user_id = %s AND role = 'user' ORDER BY created_at",
+        "SELECT content FROM messages WHERE user_id = ? AND role = 'user' ORDER BY created_at",
         (user_id,)
     )
     user_msgs = [r[0] for r in cur.fetchall()]
-    cur.close()
     conn.close()
     return recent, user_msgs
 
@@ -103,7 +87,7 @@ def ask_claude(user_id, channel_id, prompt):
         body["system"] = "\n\n---\n\n".join(system_parts)
 
     response = bedrock.invoke_model(
-        modelId='global.anthropic.claude-sonnet-4-6',
+        modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
         body=json.dumps(body)
     )
     result = json.loads(response['body'].read())
