@@ -92,10 +92,10 @@ TOOLS = [
 ]
 
 
-def ask_claude(user_id, channel_id, prompt):
+def ask_claude(user_id, channel_id, prompt, username):
     recent, user_msgs = get_context(user_id, channel_id)
 
-    system_parts = [f"現在の発言者のユーザーID: {user_id}"]
+    system_parts = [f"現在の発言者のユーザーID: {user_id}, ユーザー名: {username}"]
     if SERIFU:
         system_parts.append(f"以下のセリフを参考にして、そのキャラクターになりきって返答してください。ただし、1-2行に収まるくらい短く返すこと。\n\n{SERIFU}")
     if user_msgs:
@@ -162,7 +162,7 @@ async def on_message(message):
         save_message(user_id, 'user', message.content, channel_id)
 
         async with message.channel.typing():
-            reply = ask_claude(user_id, channel_id, message.content)
+            reply = ask_claude(user_id, channel_id, message.content, message.author.display_name)
 
         save_message(user_id, 'assistant', reply, channel_id)
 
