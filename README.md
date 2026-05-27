@@ -1,4 +1,6 @@
 # デプロイ方法
+## セリフデータを集める
+serif.txt に真似したい人のセリフを集めて入れておきます。
 ## Discord アプリを作る
 権限は以下の権限を与えます。
 Send Messages, Read Message History, Add Reactions, Attach Files
