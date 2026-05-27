@@ -1,0 +1,32 @@
+{
+  "family": "discord-sonic-bot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/discord-sonic-bot-task-role",
+  "containerDefinitions": [
+    {
+      "name": "discord-sonic-bot",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/discord-sonic-bot:latest",
+      "essential": true,
+      "environment": [
+        { "name": "AWS_REGION", "value": "us-east-1" }
+      ],
+      "secrets": [
+        { "name": "DISCORD_TOKEN", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/discord-token" },
+        { "name": "AWS_ACCESS_KEY_ID", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/aws-access-key-id" },
+        { "name": "AWS_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/aws-secret-access-key" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/discord-sonic-bot",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
