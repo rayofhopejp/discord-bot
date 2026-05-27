@@ -172,6 +172,28 @@ def ask_claude(user_id, channel_id, prompt, username, images=None):
     return next(b["text"] for b in result["content"] if b["type"] == "text")
 
 
+def pick_reaction(text):
+    """メッセージに適切な絵文字リアクションを選ぶ"""
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": text}],
+        "system": "以下のメッセージに最も適切なUnicode絵文字を1つだけ返してください。絵文字のみを返し、他には何も書かないでください。"
+    }
+    try:
+        response = bedrock.invoke_model(
+            modelId='global.anthropic.claude-sonnet-4-6',
+            body=json.dumps(body)
+        )
+        result = json.loads(response['body'].read())
+        emoji = result['content'][0]['text'].strip()
+        if len(emoji) <= 2:
+            return emoji
+    except Exception:
+        pass
+    return None
+
+
 @client.event
 async def on_ready():
     init_db()
@@ -192,6 +214,14 @@ async def on_message(message):
         channel_id = str(message.channel.id)
 
         save_message(user_id, 'user', message.content, channel_id)
+
+        # Add emoji reaction
+        emoji = pick_reaction(message.content)
+        if emoji:
+            try:
+                await message.add_reaction(emoji)
+            except Exception:
+                pass
 
         # Download image attachments
         images = []
