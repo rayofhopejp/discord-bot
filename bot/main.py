@@ -176,9 +176,9 @@ def pick_reaction(text):
     """メッセージに適切な絵文字リアクションを選ぶ"""
     body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 50,
+        "max_tokens": 20,
         "messages": [{"role": "user", "content": text}],
-        "system": "以下のメッセージに最も適切なUnicode絵文字を1つだけ返してください。絵文字のみを返し、他には何も書かないでください。"
+        "system": "このメッセージに合うUnicode絵文字を1つだけ返せ。絵文字以外は一切書くな。"
     }
     try:
         response = bedrock.invoke_model(
@@ -187,10 +187,11 @@ def pick_reaction(text):
         )
         result = json.loads(response['body'].read())
         emoji = result['content'][0]['text'].strip()
-        if len(emoji) <= 2:
+        print(f"リアクション候補: {emoji} (len={len(emoji)})")
+        if len(emoji) <= 10:
             return emoji
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"リアクション取得エラー: {e}")
     return None
 
 
