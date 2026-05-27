@@ -184,24 +184,29 @@ export class NovaSonicSession {
 
   private async processResponses(response: any): Promise<void> {
     let role = "";
-    for await (const event of response.body) {
-      if (!this.isActive && this.queue.length === 0) break;
+    try {
+      for await (const event of response.body) {
+        if (!this.isActive && this.queue.length === 0) break;
 
-      if (event.chunk?.bytes) {
-        try {
-          const json = JSON.parse(new TextDecoder().decode(event.chunk.bytes));
-          const evt = json.event;
-          if (!evt) continue;
+        if (event.chunk?.bytes) {
+          try {
+            const json = JSON.parse(new TextDecoder().decode(event.chunk.bytes));
+            const evt = json.event;
+            if (!evt) continue;
 
-          if (evt.contentStart) {
-            role = evt.contentStart.role || role;
-          } else if (evt.audioOutput) {
-            this.onAudioOutput?.(evt.audioOutput.content);
-          } else if (evt.textOutput) {
-            this.onTextOutput?.(evt.textOutput.content, role);
-          }
-        } catch { /* ignore parse errors */ }
+            if (evt.contentStart) {
+              role = evt.contentStart.role || role;
+            } else if (evt.audioOutput) {
+              this.onAudioOutput?.(evt.audioOutput.content);
+            } else if (evt.textOutput) {
+              this.onTextOutput?.(evt.textOutput.content, role);
+            }
+          } catch { /* ignore parse errors */ }
+        }
       }
+    } finally {
+      this.isActive = false;
+      this.queueSignal.next();
     }
   }
 }
