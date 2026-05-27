@@ -1,6 +1,7 @@
 import discord
 import os
 import json
+import re
 import sqlite3
 import traceback
 import base64
@@ -76,6 +77,25 @@ def tavily_search(query):
     )
     results = resp.json().get("results", [])
     return "\n\n".join(f"[{r['title']}]({r['url']})\n{r.get('content','')}" for r in results)
+
+
+def fetch_urls(urls):
+    """Tavily Extract APIでURL先のコンテンツを取得"""
+    if not TAVILY_API_KEY or not urls:
+        return ""
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/extract",
+            json={"api_key": TAVILY_API_KEY, "urls": urls}
+        )
+        results = resp.json().get("results", [])
+        parts = []
+        for r in results:
+            text = r.get("raw_content", "") or r.get("text", "")
+            parts.append(f"[{r.get('url','')}]\n{text[:3000]}")
+        return "\n\n---\n\n".join(parts)
+    except Exception:
+        return ""
 
 
 TOOLS = [
@@ -180,8 +200,15 @@ async def on_message(message):
                 img_bytes = await att.read()
                 images.append((base64.b64encode(img_bytes).decode(), att.content_type))
 
+        # Fetch URL content
+        urls = re.findall(r'https?://[^\s<>]+', message.content)
+        url_content = fetch_urls(urls[:3]) if urls else ""
+        prompt = message.content
+        if url_content:
+            prompt += f"\n\n以下はリンク先の内容です:\n{url_content}"
+
         async with message.channel.typing():
-            reply = ask_claude(user_id, channel_id, message.content, message.author.display_name, images or None)
+            reply = ask_claude(user_id, channel_id, prompt, message.author.display_name, images or None)
 
         save_message(user_id, 'assistant', reply, channel_id)
 
