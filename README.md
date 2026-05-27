@@ -15,4 +15,9 @@
     --stack-name discord-bot \
     --parameter-overrides \
       DiscordToken=<YOUR_TOKEN> \
-  
+
+
+  Permissions Integer
+  Send Messages, Read Message History, Add Reactions, Attach
+  Files
+  68672
