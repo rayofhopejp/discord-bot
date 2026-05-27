@@ -99,22 +99,40 @@ export class DiscordBot {
   }
 
   private async setupConnection(connection: VoiceConnection, guildId: string): Promise<void> {
+    // Track state changes from the start
+    connection.on("stateChange", (oldState, newState) => {
+      console.log(`Voice connection state: ${oldState.status} -> ${newState.status}`);
+    });
+
+    connection.on("error", (err) => {
+      console.error("Voice connection error:", err);
+    });
+
+    (connection as any).on("debug", (msg: string) => {
+      console.log(`[Voice Debug] ${msg}`);
+    });
+
     // Wait for connection to be ready
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-    } catch {
+      console.log("Voice connection ready");
+    } catch (err) {
+      console.error("Voice connection failed to become ready:", err);
       connection.destroy();
       return;
     }
 
     // Handle disconnects
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      console.log("Voice connection disconnected, attempting to recover...");
       try {
         await Promise.race([
           entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
           entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
         ]);
+        console.log("Voice connection recovered");
       } catch {
+        console.log("Voice connection recovery failed, disconnecting");
         await this.disconnect(guildId);
       }
     });
