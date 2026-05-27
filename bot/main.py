@@ -118,11 +118,11 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     message_content = message_content or prompt
 
     system_parts = [f"現在の発言者のユーザーID: {user_id}, ユーザー名: {username}"]
-    if SERIFU:
-        system_parts.append(f"以下のセリフを参考にして、そのキャラクターになりきって返答してください。ただし、1-2行に収まるくらい短く返すこと。\n\n{SERIFU}")
     if user_msgs:
         system_parts.append(f"このユーザーの過去の発言一覧:\n" + "\n".join(user_msgs[-50:]))
-
+    if SERIFU:
+        system_parts.append(f"以下の「うさねこらーじ」のセリフを参考にして、うさねこらーじになりきって返答してください。ただし、1-2行に収まるくらい短く返すこと。\n\n{SERIFU}")
+    
     messages = [{"role": r, "content": f"[user_id:{uid}] {c}" if r == "user" else c} for r, c, uid in recent]
 
     # Build user content with images
