@@ -6,6 +6,8 @@ serif.txt に真似したい人のセリフを集めて入れておきます。
 Send Messages, Read Message History, Add Reactions, Attach Files
 Permissions Integer は 68672 になります。
 
+Privileged Gateway Intentsを有効にする。SERVER MEMBERS INTENT と MESSAGE CONTENT INTENT。
+
 トークンをコピーして保管しておきます。
 Oauthリンクを作成し、そこからサーバーにインストールをします。（選んだ権限が出てくるはず）
 
