@@ -113,8 +113,9 @@ TOOLS = [
 ]
 
 
-def ask_claude(user_id, channel_id, prompt, username, images=None):
+def ask_claude(user_id, channel_id, prompt, username, images=None, message_content=None):
     recent, user_msgs = get_context(user_id, channel_id)
+    message_content = message_content or prompt
 
     system_parts = [f"現在の発言者のユーザーID: {user_id}, ユーザー名: {username}"]
     if SERIFU:
@@ -134,7 +135,10 @@ def ask_claude(user_id, channel_id, prompt, username, images=None):
             })
     user_content.append({"type": "text", "text": prompt or "この画像に対して適切な返しをしてください"})
 
-    if not messages or messages[-1].get("content") != prompt:
+    # 最後のメッセージが今回の発言ならDB履歴から既に含まれているので差し替え、そうでなければ追加
+    if recent and recent[-1][0] == "user" and recent[-1][1] == message_content:
+        messages[-1] = {"role": "user", "content": user_content}
+    else:
         messages.append({"role": "user", "content": user_content})
 
     body = {
@@ -239,7 +243,7 @@ async def on_message(message):
             prompt += f"\n\n以下はリンク先の内容です:\n{url_content}"
 
         async with message.channel.typing():
-            reply = ask_claude(user_id, channel_id, prompt, message.author.display_name, images or None)
+            reply = ask_claude(user_id, channel_id, prompt, message.author.display_name, images or None, message.content)
 
         save_message(user_id, 'assistant', reply, channel_id)
 
