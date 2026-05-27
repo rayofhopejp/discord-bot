@@ -3,6 +3,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { DiscordBot } from "./bot";
 
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection:", err);
+});
+
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.error("DISCORD_TOKEN is required");
