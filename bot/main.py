@@ -56,7 +56,7 @@ def get_context(user_id, channel_id):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT role, content, user_id FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 20",
+        "SELECT role, content, user_id FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 50",
         (channel_id,)
     )
     recent = cur.fetchall()[::-1]
