@@ -3,6 +3,7 @@ import os
 import json
 import sqlite3
 import traceback
+import base64
 import boto3
 import requests
 from dotenv import load_dotenv
@@ -92,7 +93,7 @@ TOOLS = [
 ]
 
 
-def ask_claude(user_id, channel_id, prompt, username):
+def ask_claude(user_id, channel_id, prompt, username, images=None):
     recent, user_msgs = get_context(user_id, channel_id)
 
     system_parts = [f"現在の発言者のユーザーID: {user_id}, ユーザー名: {username}"]
@@ -102,8 +103,19 @@ def ask_claude(user_id, channel_id, prompt, username):
         system_parts.append(f"このユーザーの過去の発言一覧:\n" + "\n".join(user_msgs[-50:]))
 
     messages = [{"role": r, "content": f"[user_id:{uid}] {c}" if r == "user" else c} for r, c, uid in recent]
-    if not messages or messages[-1]["content"] != prompt:
-        messages.append({"role": "user", "content": prompt})
+
+    # Build user content with images
+    user_content = []
+    if images:
+        for img_data, media_type in images:
+            user_content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": img_data}
+            })
+    user_content.append({"type": "text", "text": prompt or "この画像に対して適切な返しをしてください"})
+
+    if not messages or messages[-1].get("content") != prompt:
+        messages.append({"role": "user", "content": user_content})
 
     body = {
         "anthropic_version": "bedrock-2023-05-31",
@@ -161,8 +173,15 @@ async def on_message(message):
 
         save_message(user_id, 'user', message.content, channel_id)
 
+        # Download image attachments
+        images = []
+        for att in message.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                img_bytes = await att.read()
+                images.append((base64.b64encode(img_bytes).decode(), att.content_type))
+
         async with message.channel.typing():
-            reply = ask_claude(user_id, channel_id, message.content, message.author.display_name)
+            reply = ask_claude(user_id, channel_id, message.content, message.author.display_name, images or None)
 
         save_message(user_id, 'assistant', reply, channel_id)
 
