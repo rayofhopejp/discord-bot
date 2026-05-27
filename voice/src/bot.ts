@@ -15,6 +15,7 @@ import {
   AudioPlayerStatus,
   StreamType,
   getVoiceConnection,
+  EndBehaviorType,
 } from "@discordjs/voice";
 import { OpusEncoder } from "@discordjs/opus";
 import { Transform, Readable, PassThrough } from "node:stream";
@@ -156,16 +157,29 @@ export class DiscordBot {
 
     novaSonic.onError = (err) => {
       console.error("Nova Sonic error:", err);
+      // Don't destroy the connection on Nova Sonic errors
     };
 
     // Start Nova Sonic session
-    await novaSonic.start();
+    try {
+      await novaSonic.start();
+    } catch (err) {
+      console.error("Failed to start Nova Sonic session:", err);
+      // Keep the bot in the channel even if Nova Sonic fails
+      return;
+    }
 
     // Subscribe to all speaking users
+    const subscribedUsers = new Set<string>();
+
     connection.receiver.speaking.on("start", (userId) => {
       if (this.client.user?.id === userId) return; // ignore self
+      if (subscribedUsers.has(userId)) return; // already subscribed
 
-      const opusStream = connection.receiver.subscribe(userId, { end: { behavior: 1, duration: 300 } });
+      subscribedUsers.add(userId);
+      const opusStream = connection.receiver.subscribe(userId, {
+        end: { behavior: EndBehaviorType.Manual },
+      });
       const decoder = new OpusEncoder(48000, 2);
 
       opusStream.on("data", (packet: Buffer) => {
@@ -176,6 +190,15 @@ export class DiscordBot {
           const pcm16kMono = resample48kStereoTo16kMono(pcm48kStereo);
           novaSonic.sendAudio(pcm16kMono);
         } catch { /* ignore decode errors */ }
+      });
+
+      opusStream.on("error", (err) => {
+        console.error(`Opus stream error for user ${userId}:`, err);
+        subscribedUsers.delete(userId);
+      });
+
+      opusStream.on("close", () => {
+        subscribedUsers.delete(userId);
       });
     });
   }
@@ -193,11 +216,15 @@ export class DiscordBot {
     const stream = new PassThrough();
     stream.end(combined);
 
-    const resource = createAudioResource(stream, { inputType: StreamType.Raw });
+    const resource = createAudioResource(stream, {
+      inputType: StreamType.Raw,
+      inlineVolume: false,
+    });
     player.play(resource);
 
     player.once(AudioPlayerStatus.Idle, () => {
-      this.playBuffered(session, player);
+      // Small delay to allow more audio to buffer before next play
+      setTimeout(() => this.playBuffered(session, player), 50);
     });
   }
 
