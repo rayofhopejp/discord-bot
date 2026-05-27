@@ -15,9 +15,7 @@
         { "name": "AWS_REGION", "value": "us-east-1" }
       ],
       "secrets": [
-        { "name": "DISCORD_TOKEN", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/discord-token" },
-        { "name": "AWS_ACCESS_KEY_ID", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/aws-access-key-id" },
-        { "name": "AWS_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/aws-secret-access-key" }
+        { "name": "DISCORD_TOKEN", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/discord-sonic-bot/discord-token" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
