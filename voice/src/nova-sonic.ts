@@ -12,7 +12,7 @@ const MODEL_ID = "amazon.nova-2-sonic-v1:0";
 
 interface SessionConfig {
   region: string;
-  credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  credentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
   voiceId?: string;
   systemPrompt?: string;
 }
@@ -39,7 +39,7 @@ export class NovaSonicSession {
 
     this.client = new BedrockRuntimeClient({
       region: config.region,
-      credentials: config.credentials,
+      ...(config.credentials && { credentials: config.credentials }),
       requestHandler: new NodeHttp2Handler({
         requestTimeout: 300000,
         sessionTimeout: 300000,
