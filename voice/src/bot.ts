@@ -34,14 +34,14 @@ export class DiscordBot {
   private client: Client;
   private sessions = new Map<string, UserSession>(); // guildId -> session
   private awsRegion: string;
-  private awsCredentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  private awsCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
   private voiceId: string;
   private systemPrompt: string;
 
   constructor(config: {
     token: string;
     awsRegion: string;
-    awsCredentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+    awsCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
     voiceId?: string;
     systemPrompt?: string;
   }) {
