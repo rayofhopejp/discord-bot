@@ -4,12 +4,14 @@ import json
 import sqlite3
 import traceback
 import boto3
+import requests
 from dotenv import load_dotenv
 
 load_dotenv('../.env')
 
 TOKEN = os.getenv('TOKEN')
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+TAVILY_API_KEY = os.getenv('TAVILY_API_KEY', '')
 SERIFU_PATH = '/usr/src/serifu.txt'
 SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ''
 ALLOWED_CHANNELS = [ch.strip() for ch in os.getenv('ALLOWED_CHANNELS', '').split(',') if ch.strip()]
@@ -53,7 +55,7 @@ def get_context(user_id, channel_id):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT role, content FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 20",
+        "SELECT role, content, user_id FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 20",
         (channel_id,)
     )
     recent = cur.fetchall()[::-1]
@@ -66,23 +68,48 @@ def get_context(user_id, channel_id):
     return recent, user_msgs
 
 
+def tavily_search(query):
+    resp = requests.post(
+        "https://api.tavily.com/search",
+        json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 5}
+    )
+    results = resp.json().get("results", [])
+    return "\n\n".join(f"[{r['title']}]({r['url']})\n{r.get('content','')}" for r in results)
+
+
+TOOLS = [
+    {
+        "name": "web_search",
+        "description": "インターネットで最新情報を検索します。最新のニュース、事実確認、知らない情報を調べる時に使ってください。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "検索クエリ"}
+            },
+            "required": ["query"]
+        }
+    }
+]
+
+
 def ask_claude(user_id, channel_id, prompt):
     recent, user_msgs = get_context(user_id, channel_id)
 
-    system_parts = []
+    system_parts = [f"現在の発言者のユーザーID: {user_id}"]
     if SERIFU:
         system_parts.append(f"以下のセリフを参考にして、そのキャラクターになりきって返答してください。ただし、1-2行に収まるくらい短く返すこと。\n\n{SERIFU}")
     if user_msgs:
         system_parts.append(f"このユーザーの過去の発言一覧:\n" + "\n".join(user_msgs[-50:]))
 
-    messages = [{"role": r, "content": c} for r, c in recent]
+    messages = [{"role": r, "content": f"[user_id:{uid}] {c}" if r == "user" else c} for r, c, uid in recent]
     if not messages or messages[-1]["content"] != prompt:
         messages.append({"role": "user", "content": prompt})
 
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 1024,
-        "messages": messages
+        "messages": messages,
+        "tools": TOOLS if TAVILY_API_KEY else []
     }
     if system_parts:
         body["system"] = "\n\n---\n\n".join(system_parts)
@@ -92,7 +119,25 @@ def ask_claude(user_id, channel_id, prompt):
         body=json.dumps(body)
     )
     result = json.loads(response['body'].read())
-    return result['content'][0]['text']
+
+    # Handle tool use
+    if result.get("stop_reason") == "tool_use":
+        tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
+        search_result = tavily_search(tool_block["input"]["query"])
+
+        messages.append({"role": "assistant", "content": result["content"]})
+        messages.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
+        ]})
+
+        body["messages"] = messages
+        response = bedrock.invoke_model(
+            modelId='global.anthropic.claude-sonnet-4-6',
+            body=json.dumps(body)
+        )
+        result = json.loads(response['body'].read())
+
+    return next(b["text"] for b in result["content"] if b["type"] == "text")
 
 
 @client.event
