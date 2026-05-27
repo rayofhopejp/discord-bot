@@ -88,6 +88,12 @@ Resources:
     Properties:
       GroupDescription: Security group for Discord Bot (egress only)
       VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 50000
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+          Description: Discord voice UDP
       SecurityGroupEgress:
         - IpProtocol: "-1"
           CidrIp: 0.0.0.0/0
