@@ -11,6 +11,7 @@ RUN npm install --production=false
 
 COPY tsconfig.json ./
 COPY src/ ./src/
+COPY serif.txt ./
 
 RUN npm run build
 RUN npm prune --production
