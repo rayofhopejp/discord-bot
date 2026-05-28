@@ -113,6 +113,28 @@ TOOLS = [
 ]
 
 
+def merge_consecutive_roles(messages):
+    """同じroleが連続するメッセージをマージしてClaude APIの交互配置要件を満たす"""
+    if not messages:
+        return messages
+    merged = [messages[0]]
+    for msg in messages[1:]:
+        if msg["role"] == merged[-1]["role"]:
+            # 同じroleが連続 → contentをマージ
+            prev = merged[-1]["content"]
+            curr = msg["content"]
+            if isinstance(prev, str) and isinstance(curr, str):
+                merged[-1]["content"] = prev + "\n" + curr
+            else:
+                # リスト形式の場合
+                prev_list = prev if isinstance(prev, list) else [{"type": "text", "text": prev}]
+                curr_list = curr if isinstance(curr, list) else [{"type": "text", "text": curr}]
+                merged[-1]["content"] = prev_list + curr_list
+        else:
+            merged.append(msg)
+    return merged
+
+
 def ask_claude(user_id, channel_id, prompt, username, images=None, message_content=None):
     recent, user_msgs = get_context(user_id, channel_id)
     message_content = message_content or prompt
@@ -140,6 +162,11 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
         messages[-1] = {"role": "user", "content": user_content}
     else:
         messages.append({"role": "user", "content": user_content})
+
+    # 同じroleの連続をマージし、最初のメッセージがuserであることを保証
+    messages = merge_consecutive_roles(messages)
+    if messages and messages[0]["role"] != "user":
+        messages = messages[1:]
 
     body = {
         "anthropic_version": "bedrock-2023-05-31",
