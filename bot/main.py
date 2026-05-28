@@ -202,9 +202,8 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
             result = _invoke(messages)
     except Exception as e:
         if 'ValidationException' in str(type(e).__name__):
-            # 履歴を捨てて最後のuserメッセージだけで再試行
-            messages = [messages[-1]] if messages else [{"role": "user", "content": prompt}]
-            result = _invoke(messages)
+            # 履歴を捨てて現在のメッセージだけで再試行
+            result = _invoke([{"role": "user", "content": user_content}])
         else:
             raise
 
