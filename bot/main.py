@@ -1,6 +1,7 @@
 import discord
 import os
 import json
+import asyncio
 import re
 import sqlite3
 import traceback
@@ -262,7 +263,7 @@ async def on_message(message):
         save_message(user_id, 'user', message.content, channel_id)
 
         # Add emoji reaction
-        emoji = pick_reaction(message.content)
+        emoji = await asyncio.to_thread(pick_reaction, message.content)
         if emoji:
             try:
                 await message.add_reaction(emoji)
@@ -284,7 +285,7 @@ async def on_message(message):
             prompt += f"\n\n以下はリンク先の内容です:\n{url_content}"
 
         async with message.channel.typing():
-            reply = ask_claude(user_id, channel_id, prompt, message.author.display_name, images or None, message.content)
+            reply = await asyncio.to_thread(ask_claude, user_id, channel_id, prompt, message.author.display_name, images or None, message.content)
 
         save_message(user_id, 'assistant', reply, channel_id)
 
