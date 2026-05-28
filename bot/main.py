@@ -186,27 +186,27 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     # ValidationException時は履歴を削って再試行
     try:
         result = _invoke(messages)
+
+        # Handle tool use (最大2回まで)
+        for _ in range(2):
+            if result.get("stop_reason") != "tool_use":
+                break
+            tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
+            search_result = tavily_search(tool_block["input"]["query"])
+
+            messages.append({"role": "assistant", "content": result["content"]})
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
+            ]})
+
+            result = _invoke(messages)
     except Exception as e:
         if 'ValidationException' in str(type(e).__name__):
-            # 最後のuserメッセージだけで再試行
-            messages = [messages[-1]]
+            # 履歴を捨てて最後のuserメッセージだけで再試行
+            messages = [messages[-1]] if messages else [{"role": "user", "content": prompt}]
             result = _invoke(messages)
         else:
             raise
-
-    # Handle tool use (最大2回まで)
-    for _ in range(2):
-        if result.get("stop_reason") != "tool_use":
-            break
-        tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
-        search_result = tavily_search(tool_block["input"]["query"])
-
-        messages.append({"role": "assistant", "content": result["content"]})
-        messages.append({"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
-        ]})
-
-        result = _invoke(messages)
 
     text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
     return text_blocks[0] if text_blocks else "難しいこと聞きすぎ！！わかんないや😂"
