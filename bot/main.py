@@ -71,12 +71,17 @@ def get_context(user_id, channel_id):
 
 
 def tavily_search(query):
-    resp = requests.post(
-        "https://api.tavily.com/search",
-        json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 5}
-    )
-    results = resp.json().get("results", [])
-    return "\n\n".join(f"[{r['title']}]({r['url']})\n{r.get('content','')}" for r in results)
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 5},
+            timeout=10
+        )
+        results = resp.json().get("results", [])
+        return "\n\n".join(f"[{r['title']}]({r['url']})\n{r.get('content','')}" for r in results) or "検索結果が見つかりませんでした。"
+    except Exception as e:
+        print(f"Tavily検索エラー: {e}")
+        return "検索に失敗しました。知っている情報で回答してください。"
 
 
 def fetch_urls(urls):
@@ -168,13 +173,14 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     if messages and messages[0]["role"] != "user":
         messages = messages[1:]
 
-    def _invoke(msgs):
+    def _invoke(msgs, use_tools=True):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
             "messages": msgs,
-            "tools": TOOLS if TAVILY_API_KEY else []
         }
+        if use_tools and TAVILY_API_KEY:
+            body["tools"] = TOOLS
         if system_parts:
             body["system"] = "\n\n---\n\n".join(system_parts)
         resp = bedrock.invoke_model(
@@ -202,8 +208,8 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
             result = _invoke(messages)
     except Exception as e:
         if 'ValidationException' in str(type(e).__name__):
-            # 履歴を捨てて現在のメッセージだけで再試行
-            result = _invoke([{"role": "user", "content": user_content}])
+            # 履歴を捨ててtools無しで再試行（tool_useループを避ける）
+            result = _invoke([{"role": "user", "content": user_content}], use_tools=False)
         else:
             raise
 
