@@ -168,23 +168,36 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     if messages and messages[0]["role"] != "user":
         messages = messages[1:]
 
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1024,
-        "messages": messages,
-        "tools": TOOLS if TAVILY_API_KEY else []
-    }
-    if system_parts:
-        body["system"] = "\n\n---\n\n".join(system_parts)
+    def _invoke(msgs):
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "messages": msgs,
+            "tools": TOOLS if TAVILY_API_KEY else []
+        }
+        if system_parts:
+            body["system"] = "\n\n---\n\n".join(system_parts)
+        resp = bedrock.invoke_model(
+            modelId='global.anthropic.claude-sonnet-4-6',
+            body=json.dumps(body)
+        )
+        return json.loads(resp['body'].read())
 
-    response = bedrock.invoke_model(
-        modelId='global.anthropic.claude-sonnet-4-6',
-        body=json.dumps(body)
-    )
-    result = json.loads(response['body'].read())
+    # ValidationException時は履歴を削って再試行
+    try:
+        result = _invoke(messages)
+    except Exception as e:
+        if 'ValidationException' in str(type(e).__name__):
+            # 最後のuserメッセージだけで再試行
+            messages = [messages[-1]]
+            result = _invoke(messages)
+        else:
+            raise
 
-    # Handle tool use
-    if result.get("stop_reason") == "tool_use":
+    # Handle tool use (最大2回まで)
+    for _ in range(2):
+        if result.get("stop_reason") != "tool_use":
+            break
         tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
         search_result = tavily_search(tool_block["input"]["query"])
 
@@ -193,14 +206,10 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
             {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
         ]})
 
-        body["messages"] = messages
-        response = bedrock.invoke_model(
-            modelId='global.anthropic.claude-sonnet-4-6',
-            body=json.dumps(body)
-        )
-        result = json.loads(response['body'].read())
+        result = _invoke(messages)
 
-    return next(b["text"] for b in result["content"] if b["type"] == "text")
+    text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
+    return text_blocks[0] if text_blocks else "難しいこと聞きすぎ！！わかんないや😂"
 
 
 def pick_reaction(text):
