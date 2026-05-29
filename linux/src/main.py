@@ -179,6 +179,8 @@ TOOLS_SPEC = [
      "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     {"name": "save_note", "description": "学んだことをメモリに保存",
      "input_schema": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}},
+    {"name": "attach_image", "description": "画像ファイルを次回レポートに添付する（グラフや図を生成した時に使う）",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": "画像ファイルのパス"}}, "required": ["path"]}},
 ]
 
 _cycle_tool_log = []
@@ -205,6 +207,15 @@ def execute_tool(name, inp, memory):
         save_memory(memory)
         _cycle_tool_log.append(f"💾 {inp['note'][:80]}")
         return "Saved."
+    elif name == "attach_image":
+        import shutil
+        src = inp["path"]
+        if os.path.exists(src):
+            dest = str(SHARED_DIR / "report.png")
+            shutil.copy2(src, dest)
+            _cycle_tool_log.append(f"🖼️ {src}")
+            return "Image attached."
+        return "File not found."
     return "Unknown tool"
 
 
@@ -250,7 +261,9 @@ def think_and_act(memory, discord_msgs):
 ルール:
 - 1サイクルで最大5回までツールを使える
 - 学んだことはsave_noteで記録する
-- 毎回、何を研究したか・何を発見したかをまとめる"""
+- 毎回、何を研究したか・何を発見したかをまとめる
+- コードや成果物は必ず /workspace/ に保存すること（ここだけが永続化される）
+- 前のサイクルで作ったファイルは /workspace/ にあるので、ls /workspace/ で確認してから作業を始める"""
 
     learnings = "\n".join(f"- {l}" for l in memory["learnings"][-20:]) if memory["learnings"] else "まだなし"
     recent_history = "\n".join(memory["history"][-5:]) if memory["history"] else "初回起動"
@@ -333,8 +346,11 @@ def main():
             if now - last_report >= REPORT_INTERVAL or memory["cycle"] == 1:
                 recent = memory["history"][-10:]
                 full_summary = "## 最近の研究活動\n" + "\n".join(f"- {h}" for h in recent)
-                screenshot = render_report_image(full_summary, _cycle_tool_log)
+                img_path = str(SHARED_DIR / "report.png")
+                screenshot = img_path if os.path.exists(img_path) else None
                 write_report(full_summary, screenshot)
+                if screenshot:
+                    os.remove(screenshot)
                 last_report = now
                 log_activity("Report written")
 
