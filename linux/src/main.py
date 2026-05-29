@@ -312,15 +312,17 @@ def main():
             summary = think_and_act(memory, discord_msgs)
 
             memory["cycle"] += 1
-            memory["history"].append(f"Cycle {memory['cycle']}: {summary[:100]}")
+            memory["history"].append(f"Cycle {memory['cycle']}: {summary}")
             memory["history"] = memory["history"][-30:]
             save_memory(memory)
             log_activity(f"Cycle {memory['cycle']} done: {summary[:80]}")
 
             now = time.time()
             if now - last_report >= REPORT_INTERVAL or memory["cycle"] == 1:
-                screenshot = render_report_image(summary, _cycle_tool_log)
-                write_report(summary, screenshot)
+                recent = memory["history"][-10:]
+                full_summary = "## 最近の研究活動\n" + "\n".join(f"- {h}" for h in recent)
+                screenshot = render_report_image(full_summary, _cycle_tool_log)
+                write_report(full_summary, screenshot)
                 last_report = now
                 log_activity("Report written")
 
