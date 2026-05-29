@@ -6,10 +6,8 @@ import re
 import sqlite3
 import traceback
 import base64
-import zlib
 import boto3
 import requests
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from dotenv import load_dotenv
 
 load_dotenv('../.env')
@@ -106,52 +104,6 @@ def fetch_urls(urls):
         return ""
 
 
-def upload_to_excalidraw(elements_json):
-    """Excalidraw elements JSONをexcalidraw.comにアップロードしてシェアリンクを返す"""
-    scene = json.dumps({
-        "type": "excalidraw",
-        "version": 2,
-        "elements": json.loads(elements_json),
-        "appState": {"viewBackgroundColor": "#ffffff"}
-    })
-    data_bytes = scene.encode()
-    file_meta = json.dumps({}).encode()
-
-    # concatBuffers: [version=1 (4B)] [len (4B)] [data] ...
-    def concat(*bufs):
-        total = 4 + sum(4 + len(b) for b in bufs)
-        out = bytearray(total)
-        import struct
-        struct.pack_into('<I', out, 0, 1)
-        offset = 4
-        for b in bufs:
-            struct.pack_into('<I', out, offset, len(b))
-            offset += 4
-            out[offset:offset+len(b)] = b
-            offset += len(b)
-        return bytes(out)
-
-    inner = concat(file_meta, data_bytes)
-    compressed = zlib.compress(inner)
-
-    # AES-GCM 128-bit encryption
-    key = os.urandom(16)
-    iv = os.urandom(12)
-    aesgcm = AESGCM(key)
-    encrypted = aesgcm.encrypt(iv, compressed, None)
-
-    encoding_meta = json.dumps({"version": 2, "compression": "pako@1", "encryption": "AES-GCM"}).encode()
-    payload = concat(encoding_meta, iv, encrypted)
-
-    resp = requests.post("https://json.excalidraw.com/api/v2/post/", data=payload, timeout=15)
-    resp.raise_for_status()
-    file_id = resp.json()["id"]
-
-    # base64url encode the key (no padding)
-    key_b64 = base64.urlsafe_b64encode(key).rstrip(b'=').decode()
-    return f"https://excalidraw.com/#json={file_id},{key_b64}"
-
-
 TOOLS = [
     {
         "name": "web_search",
@@ -162,20 +114,6 @@ TOOLS = [
                 "query": {"type": "string", "description": "検索クエリ"}
             },
             "required": ["query"]
-        }
-    },
-    {
-        "name": "draw_diagram",
-        "description": "Excalidrawで手書き風の図やダイアグラムを描きます。アーキテクチャ図、フローチャート、シーケンス図、概念図など、視覚的な説明が必要な時に使ってください。elementsはExcalidraw elements形式のJSON配列文字列です。必ずcameraUpdateを最初に入れてください。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "elements": {
-                    "type": "string",
-                    "description": "Excalidraw elements JSON配列文字列。例: [{\"type\":\"cameraUpdate\",\"width\":800,\"height\":600,\"x\":0,\"y\":0},{\"type\":\"rectangle\",\"id\":\"r1\",\"x\":100,\"y\":100,\"width\":200,\"height\":100,\"label\":{\"text\":\"Hello\",\"fontSize\":20}}]"
-                }
-            },
-            "required": ["elements"]
         }
     }
 ]
@@ -230,10 +168,10 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     def _invoke(msgs, use_tools=True):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
+            "max_tokens": 1024,
             "messages": msgs,
         }
-        if use_tools:
+        if use_tools and TAVILY_API_KEY:
             body["tools"] = TOOLS
         if system_parts:
             body["system"] = "\n\n---\n\n".join(system_parts)
@@ -246,30 +184,17 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     # ValidationException時は履歴を削って再試行
     try:
         result = _invoke(messages)
-        excalidraw_urls = []
 
         # Handle tool use (最大2回まで)
         for _ in range(2):
             if result.get("stop_reason") != "tool_use":
                 break
             tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
-            tool_name = tool_block["name"]
-
-            if tool_name == "web_search":
-                tool_result = tavily_search(tool_block["input"]["query"])
-            elif tool_name == "draw_diagram":
-                try:
-                    url = upload_to_excalidraw(tool_block["input"]["elements"])
-                    excalidraw_urls.append(url)
-                    tool_result = f"図を作成しました: {url}"
-                except Exception as e:
-                    tool_result = f"図の作成に失敗しました: {e}"
-            else:
-                tool_result = "Unknown tool"
+            search_result = tavily_search(tool_block["input"]["query"])
 
             messages.append({"role": "assistant", "content": result["content"]})
             messages.append({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": tool_block["id"], "content": tool_result}
+                {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
             ]})
 
             result = _invoke(messages)
@@ -277,15 +202,11 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
         if 'ValidationException' in str(type(e).__name__):
             # 履歴を捨ててtools無しで再試行（tool_useループを避ける）
             result = _invoke([{"role": "user", "content": user_content}], use_tools=False)
-            excalidraw_urls = []
         else:
             raise
 
     text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
-    reply = text_blocks[0] if text_blocks else ""
-    if excalidraw_urls:
-        reply = (reply + "\n" + "\n".join(excalidraw_urls)).strip()
-    return reply or "難しいこと聞きすぎ！！わかんないや😂"
+    return text_blocks[0] if text_blocks else "難しいこと聞きすぎ！！わかんないや😂"
 
 
 def pick_reaction(text):
