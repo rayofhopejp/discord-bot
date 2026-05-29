@@ -265,7 +265,7 @@ def think_and_act(memory, discord_msgs):
             "messages": messages,
             "tools": TOOLS_SPEC,
         }
-        resp = bedrock.invoke_model(modelId="global.anthropic.claude-opus-4-8", body=json.dumps(body))
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-opus-4-7", body=json.dumps(body))
         result = json.loads(resp["body"].read())
 
         if result.get("stop_reason") != "tool_use":
@@ -303,6 +303,7 @@ def main():
 
     log_activity("エージェント起動")
     memory = load_memory()
+    write_report("エージェント起動しました。研究を開始します。", None)
     last_report = 0
 
     while True:
