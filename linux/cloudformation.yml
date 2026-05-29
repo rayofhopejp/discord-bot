@@ -37,6 +37,43 @@ Parameters:
     Description: Report interval in seconds
 
 Resources:
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-workspace"
+
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow NFS from ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref SecurityGroupId
+
+  EFSMountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref SubnetA
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref SubnetB
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -87,6 +124,10 @@ Resources:
       TaskRoleArn: !GetAtt TaskRole.Arn
       Volumes:
         - Name: shared
+        - Name: workspace
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref EFSFileSystem
+            RootDirectory: /
       ContainerDefinitions:
         - Name: agent
           Image: !Ref LinuxImageUri
@@ -95,6 +136,8 @@ Resources:
           MountPoints:
             - SourceVolume: shared
               ContainerPath: /shared
+            - SourceVolume: workspace
+              ContainerPath: /workspace
           Environment:
             - Name: SHARED_DIR
               Value: /shared
@@ -115,6 +158,9 @@ Resources:
           MountPoints:
             - SourceVolume: shared
               ContainerPath: /shared
+            - SourceVolume: workspace
+              ContainerPath: /workspace
+              ReadOnly: true
           Environment:
             - Name: LINUX_BOT_TOKEN
               Value: !Ref LinuxBotToken
@@ -135,6 +181,9 @@ Resources:
 
   Service:
     Type: AWS::ECS::Service
+    DependsOn:
+      - EFSMountTargetA
+      - EFSMountTargetB
     Properties:
       Cluster: !Ref ECSCluster
       TaskDefinition: !Ref TaskDefinition
