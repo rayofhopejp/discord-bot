@@ -1,288 +1,240 @@
-import discord
+"""自律成長エージェント - Linuxコンテナ上で自律的に行動し学習する"""
 import os
 import json
-import asyncio
-import re
-import sqlite3
+import time
+import subprocess
 import traceback
-import base64
+from datetime import datetime
+from pathlib import Path
+
 import boto3
 import requests
-from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 
-load_dotenv('../.env')
+COMMAND_INTERVAL=60
 
-TOKEN = os.getenv('TOKEN')
-AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-TAVILY_API_KEY = os.getenv('TAVILY_API_KEY', '')
-SERIFU_PATH = '/usr/src/serifu.txt'
-SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ''
-ALLOWED_CHANNELS = [ch.strip() for ch in os.getenv('ALLOWED_CHANNELS', '').split(',') if ch.strip()]
-DB_PATH = os.getenv('DB_PATH', '/usr/src/app/data/messages.db')
+SHARED_DIR = Path(os.getenv("SHARED_DIR", "/shared"))
+WORKSPACE = Path("/workspace")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+REPORT_INTERVAL = int(os.getenv("REPORT_INTERVAL", "600"))  # 10分
+MEMORY_FILE = WORKSPACE / "memory.json"
+LOG_FILE = WORKSPACE / "activity.log"
 
-intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
-
-bedrock = boto3.client('bedrock-runtime', region_name=AWS_REGION)
+bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
 
-def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            channel_id TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+def load_memory():
+    if MEMORY_FILE.exists():
+        return json.loads(MEMORY_FILE.read_text())
+    return {"goals": [], "learnings": [], "history": [], "cycle": 0}
 
 
-def save_message(user_id, role, content, channel_id):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO messages (user_id, role, content, channel_id) VALUES (?, ?, ?, ?)",
-        (user_id, role, content, channel_id)
-    )
-    conn.commit()
-    conn.close()
+def save_memory(memory):
+    MEMORY_FILE.write_text(json.dumps(memory, ensure_ascii=False, indent=2))
 
 
-def get_context(user_id, channel_id):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT role, content, user_id FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 50",
-        (channel_id,)
-    )
-    recent = cur.fetchall()[::-1]
-    cur.execute(
-        "SELECT content FROM messages WHERE user_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 100",
-        (user_id,)
-    )
-    user_msgs = [r[0] for r in cur.fetchall()][::-1]
-    conn.close()
-    return recent, user_msgs
+def log_activity(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}\n"
+    with open(LOG_FILE, "a") as f:
+        f.write(line)
+    print(line, end="")
+
+
+def run_command(cmd, timeout=30):
+    """シェルコマンドを実行して結果を返す"""
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return {"stdout": r.stdout[-2000:], "stderr": r.stderr[-500:], "code": r.returncode}
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": "timeout", "code": -1}
 
 
 def tavily_search(query):
+    if not TAVILY_API_KEY:
+        return "Tavily API key not set"
+    resp = requests.post("https://api.tavily.com/search",
+                         json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 3})
+    results = resp.json().get("results", [])
+    return "\n".join(f"- {r['title']}: {r.get('content','')[:200]}" for r in results)
+
+
+def browse_url(url):
+    """Playwrightでページを開いてスクリーンショットとテキストを取得"""
     try:
-        resp = requests.post(
-            "https://api.tavily.com/search",
-            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 5},
-            timeout=10
-        )
-        results = resp.json().get("results", [])
-        return "\n\n".join(f"[{r['title']}]({r['url']})\n{r.get('content','')}" for r in results) or "検索結果が見つかりませんでした。"
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(url, timeout=15000)
+            page.wait_for_load_state("networkidle", timeout=10000)
+            screenshot_path = str(SHARED_DIR / "screenshot.png")
+            page.screenshot(path=screenshot_path)
+            text = page.inner_text("body")[:3000]
+            browser.close()
+            return {"text": text, "screenshot": screenshot_path}
     except Exception as e:
-        print(f"Tavily検索エラー: {e}")
-        return "検索に失敗しました。知っている情報で回答してください。"
+        return {"text": f"Error: {e}", "screenshot": None}
 
 
-def fetch_urls(urls):
-    """Tavily Extract APIでURL先のコンテンツを取得"""
-    if not TAVILY_API_KEY or not urls:
-        return ""
+def take_terminal_screenshot():
+    """現在のターミナル状態をスクリーンショットとして保存（neofetch等の出力をHTMLで描画）"""
+    result = run_command("uname -a && uptime && df -h / 2>/dev/null || echo 'system ready'")
+    html = f"<html><body style='background:#1e1e1e;color:#0f0;font-family:monospace;padding:20px;'><pre>{result['stdout']}</pre></body></html>"
     try:
-        resp = requests.post(
-            "https://api.tavily.com/extract",
-            json={"api_key": TAVILY_API_KEY, "urls": urls}
-        )
-        results = resp.json().get("results", [])
-        parts = []
-        for r in results:
-            text = r.get("raw_content", "") or r.get("text", "")
-            parts.append(f"[{r.get('url','')}]\n{text[:3000]}")
-        return "\n\n---\n\n".join(parts)
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 800, "height": 600})
+            page.set_content(html)
+            path = str(SHARED_DIR / "report.png")
+            page.screenshot(path=path)
+            browser.close()
+            return path
     except Exception:
-        return ""
+        return None
 
 
-TOOLS = [
-    {
-        "name": "web_search",
-        "description": "インターネットで最新情報を検索します。最新のニュース、事実確認、知らない情報を調べる時に使ってください。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "検索クエリ"}
-            },
-            "required": ["query"]
-        }
-    }
+TOOLS_SPEC = [
+    {"name": "run_command", "description": "Linuxコマンドを実行する",
+     "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}},
+    {"name": "web_search", "description": "Tavilyで検索する",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "browse_url", "description": "URLを開いてスクリーンショットとテキストを取得",
+     "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+    {"name": "save_note", "description": "学んだことをメモリに保存",
+     "input_schema": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}},
 ]
 
 
-def merge_consecutive_roles(messages):
-    """同じroleが連続する場合にダミーメッセージを挟んでClaude APIの交互配置要件を満たす"""
-    if not messages:
-        return messages
-    merged = [messages[0]]
-    for msg in messages[1:]:
-        if msg["role"] == merged[-1]["role"]:
-            dummy_role = "assistant" if msg["role"] == "user" else "user"
-            merged.append({"role": dummy_role, "content": "--"})
-        merged.append(msg)
-    return merged
+def execute_tool(name, inp, memory):
+    if name == "run_command":
+        return json.dumps(run_command(inp["cmd"]))
+    elif name == "web_search":
+        return tavily_search(inp["query"])
+    elif name == "browse_url":
+        r = browse_url(inp["url"])
+        return r["text"]
+    elif name == "save_note":
+        memory["learnings"].append(inp["note"])
+        memory["learnings"] = memory["learnings"][-50:]
+        save_memory(memory)
+        return "Saved."
+    return "Unknown tool"
 
 
-def ask_claude(user_id, channel_id, prompt, username, images=None, message_content=None):
-    recent, user_msgs = get_context(user_id, channel_id)
-    message_content = message_content or prompt
+def get_discord_messages():
+    """共有ボリュームからDiscordメッセージを読み取る"""
+    msg_file = SHARED_DIR / "messages.json"
+    if msg_file.exists():
+        msgs = json.loads(msg_file.read_text())
+        msg_file.write_text("[]")
+        return msgs
+    return []
 
-    system_parts = [f"現在の発言者のユーザーID: {user_id}, ユーザー名: {username}"]
-    if user_msgs:
-        system_parts.append(f"このユーザーの過去の発言一覧:\n" + "\n".join(user_msgs[-50:]))
-    if SERIFU:
-        system_parts.append(f"以下の「うさねこらーじ」のセリフを参考にして、うさねこらーじになりきって返答してください。ただし、1-2行に収まるくらい短く返すこと。\n\n{SERIFU}")
-    
-    messages = [{"role": r, "content": f"[user_id:{uid}] {c}" if r == "user" else c} for r, c, uid in recent]
 
-    # Build user content with images
-    user_content = []
-    if images:
-        for img_data, media_type in images:
-            user_content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": media_type, "data": img_data}
-            })
-    user_content.append({"type": "text", "text": prompt or "この画像に対して適切な返しをしてください"})
+def write_report(summary, screenshot_path=None):
+    """報告を共有ボリュームに書き出す"""
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "summary": summary,
+        "screenshot": screenshot_path,
+    }
+    report_file = SHARED_DIR / "report.json"
+    report_file.write_text(json.dumps(report, ensure_ascii=False))
 
-    # 最後のメッセージが今回の発言ならDB履歴から既に含まれているので差し替え、そうでなければ追加
-    if recent and recent[-1][0] == "user" and recent[-1][1] == message_content:
-        messages[-1] = {"role": "user", "content": user_content}
-    else:
-        messages.append({"role": "user", "content": user_content})
 
-    # 同じroleの連続をマージし、最初のメッセージがuserであることを保証
-    messages = merge_consecutive_roles(messages)
-    if messages and messages[0]["role"] != "user":
-        messages = messages[1:]
+def think_and_act(memory, discord_msgs):
+    """Claudeに考えさせて行動する"""
+    system = """あなたはLinuxコンテナ上で動く自律成長エージェントです。
+自分で考え、コマンドを実行し、Webを調べ、新しいスキルを身につけていきます。
+好奇心を持って探索し、面白いことを見つけたら報告してください。
 
-    def _invoke(msgs, use_tools=True):
+ルール:
+- 安全なコマンドのみ実行（rm -rf / 等の破壊的コマンドは禁止）
+- 1サイクルで最大5回までツールを使える
+- 学んだことはsave_noteで記録する
+- 毎回、何をしたか・何を学んだかを最後にまとめる"""
+
+    learnings = "\n".join(f"- {l}" for l in memory["learnings"][-20:]) if memory["learnings"] else "まだなし"
+    recent_history = "\n".join(memory["history"][-5:]) if memory["history"] else "初回起動"
+
+    user_prompt = f"""サイクル #{memory['cycle'] + 1}
+
+過去の学び:
+{learnings}
+
+最近の活動:
+{recent_history}
+"""
+    if discord_msgs:
+        user_prompt += f"\nDiscordからのメッセージ:\n" + "\n".join(f"- {m}" for m in discord_msgs)
+    user_prompt += "\n\n次に何をしますか？好奇心を持って探索してください。"
+
+    messages = [{"role": "user", "content": user_prompt}]
+
+    for _ in range(5):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
-            "messages": msgs,
+            "system": system,
+            "messages": messages,
+            "tools": TOOLS_SPEC,
         }
-        if use_tools and TAVILY_API_KEY:
-            body["tools"] = TOOLS
-        if system_parts:
-            body["system"] = "\n\n---\n\n".join(system_parts)
-        resp = bedrock.invoke_model(
-            modelId='global.anthropic.claude-sonnet-4-6',
-            body=json.dumps(body)
-        )
-        return json.loads(resp['body'].read())
+        resp = bedrock.invoke_model(modelId="anthropic.claude-sonnet-4-20250514", body=json.dumps(body))
+        result = json.loads(resp["body"].read())
 
-    # ValidationException時は履歴を削って再試行
-    try:
-        result = _invoke(messages)
+        if result.get("stop_reason") != "tool_use":
+            break
 
-        # Handle tool use (最大2回まで)
-        for _ in range(2):
-            if result.get("stop_reason") != "tool_use":
-                break
-            tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
-            search_result = tavily_search(tool_block["input"]["query"])
+        # ツール実行
+        messages.append({"role": "assistant", "content": result["content"]})
+        tool_results = []
+        for block in result["content"]:
+            if block["type"] == "tool_use":
+                log_activity(f"Tool: {block['name']}({json.dumps(block['input'], ensure_ascii=False)[:100]})")
+                output = execute_tool(block["name"], block["input"], memory)
+                tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": output[:2000]})
+        messages.append({"role": "user", "content": tool_results})
 
-            messages.append({"role": "assistant", "content": result["content"]})
-            messages.append({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
-            ]})
-
-            result = _invoke(messages)
-    except Exception as e:
-        if 'ValidationException' in str(type(e).__name__):
-            # 履歴を捨ててtools無しで再試行（tool_useループを避ける）
-            result = _invoke([{"role": "user", "content": user_content}], use_tools=False)
-        else:
-            raise
-
+    # 最終テキストを取得
     text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
-    return text_blocks[0] if text_blocks else "難しいこと聞きすぎ！！わかんないや😂"
+    summary = text_blocks[0] if text_blocks else "活動完了"
+    return summary
 
 
-def pick_reaction(text):
-    """メッセージに適切な絵文字リアクションを選ぶ"""
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 20,
-        "messages": [{"role": "user", "content": text}],
-        "system": "このメッセージに合うUnicode絵文字を1つだけ返せ。絵文字以外は一切書くな。"
-    }
-    try:
-        response = bedrock.invoke_model(
-            modelId='global.anthropic.claude-sonnet-4-6',
-            body=json.dumps(body)
-        )
-        result = json.loads(response['body'].read())
-        emoji = result['content'][0]['text'].strip()
-        print(f"リアクション候補: {emoji} (len={len(emoji)})")
-        if len(emoji) <= 10:
-            return emoji
-    except Exception as e:
-        print(f"リアクション取得エラー: {e}")
-    return None
+def main():
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    (SHARED_DIR / "messages.json").write_text("[]") if not (SHARED_DIR / "messages.json").exists() else None
+
+    log_activity("エージェント起動")
+    memory = load_memory()
+    last_report = 0
+
+    while True:
+        try:
+            discord_msgs = get_discord_messages()
+            summary = think_and_act(memory, discord_msgs)
+
+            memory["cycle"] += 1
+            memory["history"].append(f"Cycle {memory['cycle']}: {summary[:100]}")
+            memory["history"] = memory["history"][-30:]
+            save_memory(memory)
+            log_activity(f"Cycle {memory['cycle']} done: {summary[:80]}")
+
+            # 10分ごとに報告
+            now = time.time()
+            if now - last_report >= REPORT_INTERVAL or memory["cycle"] == 1:
+                screenshot = take_terminal_screenshot()
+                write_report(summary, screenshot)
+                last_report = now
+                log_activity("Report written")
+
+        except Exception as e:
+            log_activity(f"Error: {traceback.format_exc()}")
+
+        time.sleep(COMMAND_INTERVAL)  # 1分ごとに行動
 
 
-@client.event
-async def on_ready():
-    init_db()
-    print('ログインしました')
-
-
-@client.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    if ALLOWED_CHANNELS and str(message.channel.id) not in ALLOWED_CHANNELS:
-        return
-
-    print(f"メッセージ受信: {message.content[:50]}")
-
-    try:
-        user_id = str(message.author.id)
-        channel_id = str(message.channel.id)
-
-        save_message(user_id, 'user', message.content, channel_id)
-
-        # Add emoji reaction
-        emoji = await asyncio.to_thread(pick_reaction, message.content)
-        if emoji:
-            try:
-                await message.add_reaction(emoji)
-            except Exception:
-                pass
-
-        # Download image attachments
-        images = []
-        for att in message.attachments:
-            if att.content_type and att.content_type.startswith("image/"):
-                img_bytes = await att.read()
-                images.append((base64.b64encode(img_bytes).decode(), att.content_type))
-
-        # Fetch URL content
-        urls = re.findall(r'https?://[^\s<>]+', message.content)
-        url_content = fetch_urls(urls[:3]) if urls else ""
-        prompt = message.content
-        if url_content:
-            prompt += f"\n\n以下はリンク先の内容です:\n{url_content}"
-
-        async with message.channel.typing():
-            reply = await asyncio.to_thread(ask_claude, user_id, channel_id, prompt, message.author.display_name, images or None, message.content)
-
-        save_message(user_id, 'assistant', reply, channel_id)
-
-        for i in range(0, len(reply), 2000):
-            await message.channel.send(reply[i:i+2000])
-    except Exception as e:
-        print(f"エラー: {traceback.format_exc()}")
-
-client.run(TOKEN)
+if __name__ == "__main__":
+    main()
