@@ -1,4 +1,6 @@
-"""自律成長エージェント - Linuxコンテナ上で自律的に行動し学習する"""
+"""自律成長エージェント - Linuxコンテナ上で自律的に行動し学習する
+API秘密情報はこのコンテナに渡さない。LLM/Tavily呼び出しはbot側に委譲する。
+"""
 import os
 import json
 import time
@@ -7,21 +9,18 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-import boto3
-import requests
-from playwright.sync_api import sync_playwright
+from PIL import Image, ImageDraw, ImageFont
 
-COMMAND_INTERVAL=30
-
+COMMAND_INTERVAL = 60
 SHARED_DIR = Path(os.getenv("SHARED_DIR", "/shared"))
 WORKSPACE = Path("/workspace")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-REPORT_INTERVAL = int(os.getenv("REPORT_INTERVAL", "600"))  # 10分
+REPORT_INTERVAL = int(os.getenv("REPORT_INTERVAL", "600"))
 MEMORY_FILE = WORKSPACE / "memory.json"
 LOG_FILE = WORKSPACE / "activity.log"
 
-bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+# API呼び出し用の共有ファイル
+API_REQUEST_FILE = SHARED_DIR / "api_request.json"
+API_RESPONSE_FILE = SHARED_DIR / "api_response.json"
 
 
 def load_memory():
@@ -43,7 +42,6 @@ def log_activity(msg):
 
 
 def run_command(cmd, timeout=30):
-    """シェルコマンドを実行して結果を返す"""
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return {"stdout": r.stdout[-2000:], "stderr": r.stderr[-500:], "code": r.returncode}
@@ -51,79 +49,179 @@ def run_command(cmd, timeout=30):
         return {"stdout": "", "stderr": "timeout", "code": -1}
 
 
+def call_api(request):
+    """bot側にAPIリクエストを送り、レスポンスを待つ"""
+    # レスポンスファイルをクリア
+    if API_RESPONSE_FILE.exists():
+        API_RESPONSE_FILE.unlink()
+    # リクエスト書き込み
+    API_REQUEST_FILE.write_text(json.dumps(request, ensure_ascii=False))
+    # レスポンス待ち (最大60秒)
+    for _ in range(120):
+        time.sleep(0.5)
+        if API_RESPONSE_FILE.exists():
+            try:
+                resp = json.loads(API_RESPONSE_FILE.read_text())
+                API_RESPONSE_FILE.unlink()
+                return resp
+            except (json.JSONDecodeError, OSError):
+                continue
+    return {"error": "API timeout"}
+
+
+def invoke_llm(system, messages, tools=None):
+    """bot経由でLLMを呼び出す"""
+    req = {"type": "llm", "system": system, "messages": messages}
+    if tools:
+        req["tools"] = tools
+    resp = call_api(req)
+    return resp
+
+
 def tavily_search(query):
-    if not TAVILY_API_KEY:
-        return "Tavily API key not set"
-    resp = requests.post("https://api.tavily.com/search",
-                         json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 3})
-    results = resp.json().get("results", [])
-    return "\n".join(f"- {r['title']}: {r.get('content','')[:200]}" for r in results)
+    """bot経由でTavily検索"""
+    resp = call_api({"type": "tavily_search", "query": query})
+    return resp.get("result", "検索失敗")
 
 
 def browse_url(url):
-    """Playwrightでページを開いてスクリーンショットとテキストを取得"""
+    """Playwrightでページを開いてテキストを取得"""
     try:
+        from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(url, timeout=15000)
             page.wait_for_load_state("networkidle", timeout=10000)
-            screenshot_path = str(SHARED_DIR / "screenshot.png")
-            page.screenshot(path=screenshot_path)
             text = page.inner_text("body")[:3000]
             browser.close()
-            return {"text": text, "screenshot": screenshot_path}
+            return text
     except Exception as e:
-        return {"text": f"Error: {e}", "screenshot": None}
+        return f"Error: {e}"
 
 
-def take_terminal_screenshot():
-    """現在のターミナル状態をスクリーンショットとして保存（neofetch等の出力をHTMLで描画）"""
-    result = run_command("uname -a && uptime && df -h / 2>/dev/null || echo 'system ready'")
-    html = f"<html><body style='background:#1e1e1e;color:#0f0;font-family:monospace;padding:20px;'><pre>{result['stdout']}</pre></body></html>"
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page(viewport={"width": 800, "height": 600})
-            page.set_content(html)
-            path = str(SHARED_DIR / "report.png")
-            page.screenshot(path=path)
-            browser.close()
-            return path
-    except Exception:
-        return None
+# --- 画像生成 (Pillow) ---
 
+def _get_font(size=14):
+    ttc_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    if os.path.exists(ttc_path):
+        return ImageFont.truetype(ttc_path, size, index=0)
+    for path in ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def render_report_image(summary, tool_log):
+    width, padding = 800, 20
+    font = _get_font(14)
+    font_title = _get_font(18)
+    line_height = 20
+    title_height = 30
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    title = f"🤖 Agent Report - {ts}"
+
+    summary_lines = _wrap_text(f"📝 {summary}", width - padding * 2, font)
+    log_lines = []
+    for entry in tool_log[-8:]:
+        log_lines.extend(_wrap_text(f"  {entry}", width - padding * 2, font))
+
+    total_lines = 2 + len(summary_lines) + 1 + 1 + len(log_lines)
+    height = max(400, padding * 2 + title_height + total_lines * line_height + 40)
+
+    img = Image.new("RGB", (width, height), color=(26, 26, 46))
+    draw = ImageDraw.Draw(img)
+    y = padding
+
+    draw.text((padding, y), title, fill=(0, 255, 255), font=font_title)
+    y += title_height + 10
+    draw.line([(padding, y), (width - padding, y)], fill=(0, 255, 255), width=1)
+    y += 10
+
+    draw.text((padding, y), "Summary:", fill=(79, 195, 247), font=font)
+    y += line_height
+    for line in summary_lines:
+        draw.text((padding + 10, y), line, fill=(238, 238, 238), font=font)
+        y += line_height
+
+    y += 10
+    draw.line([(padding, y), (width - padding, y)], fill=(50, 50, 80), width=1)
+    y += 10
+
+    draw.text((padding, y), "Activity:", fill=(79, 195, 247), font=font)
+    y += line_height
+    for line in log_lines:
+        color = (0, 255, 100) if line.strip().startswith("$") else (180, 180, 180)
+        draw.text((padding + 10, y), line, fill=color, font=font)
+        y += line_height
+
+    path = str(SHARED_DIR / "report.png")
+    img.save(path)
+    return path
+
+
+def _wrap_text(text, max_width, font):
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            lines.append("")
+            continue
+        current = ""
+        for char in paragraph:
+            test = current + char
+            bbox = font.getbbox(test)
+            if bbox[2] > max_width:
+                lines.append(current)
+                current = char
+            else:
+                current = test
+        if current:
+            lines.append(current)
+    return lines[:25]
+
+
+# --- ツール ---
 
 TOOLS_SPEC = [
     {"name": "run_command", "description": "Linuxコマンドを実行する",
      "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}},
     {"name": "web_search", "description": "Tavilyで検索する",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "browse_url", "description": "URLを開いてスクリーンショットとテキストを取得",
+    {"name": "browse_url", "description": "URLを開いてテキストを取得",
      "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     {"name": "save_note", "description": "学んだことをメモリに保存",
      "input_schema": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}},
 ]
 
+_cycle_tool_log = []
+
 
 def execute_tool(name, inp, memory):
+    global _cycle_tool_log
     if name == "run_command":
-        return json.dumps(run_command(inp["cmd"]))
+        r = run_command(inp["cmd"])
+        output = r["stdout"][:100] or r["stderr"][:100]
+        _cycle_tool_log.append(f"$ {inp['cmd']}\n    → {output}")
+        return json.dumps(r)
     elif name == "web_search":
-        return tavily_search(inp["query"])
+        result = tavily_search(inp["query"])
+        _cycle_tool_log.append(f"🔍 {inp['query']}\n    → {result[:80]}")
+        return result
     elif name == "browse_url":
-        r = browse_url(inp["url"])
-        return r["text"]
+        text = browse_url(inp["url"])
+        _cycle_tool_log.append(f"🌐 {inp['url']}\n    → {text[:80]}")
+        return text
     elif name == "save_note":
         memory["learnings"].append(inp["note"])
         memory["learnings"] = memory["learnings"][-50:]
         save_memory(memory)
+        _cycle_tool_log.append(f"💾 {inp['note'][:80]}")
         return "Saved."
     return "Unknown tool"
 
 
 def get_discord_messages():
-    """共有ボリュームからDiscordメッセージを読み取る"""
     msg_file = SHARED_DIR / "messages.json"
     if msg_file.exists():
         msgs = json.loads(msg_file.read_text())
@@ -133,18 +231,18 @@ def get_discord_messages():
 
 
 def write_report(summary, screenshot_path=None):
-    """報告を共有ボリュームに書き出す"""
     report = {
         "timestamp": datetime.now().isoformat(),
         "summary": summary,
         "screenshot": screenshot_path,
     }
-    report_file = SHARED_DIR / "report.json"
-    report_file.write_text(json.dumps(report, ensure_ascii=False))
+    (SHARED_DIR / "report.json").write_text(json.dumps(report, ensure_ascii=False))
 
 
 def think_and_act(memory, discord_msgs):
-    """Claudeに考えさせて行動する"""
+    global _cycle_tool_log
+    _cycle_tool_log = []
+
     system = """あなたはLinuxコンテナ上で動く自律成長エージェントです。
 自分で考え、コマンドを実行し、Webを調べ、新しいスキルを身につけていきます。
 好奇心を持って探索し、面白いことを見つけたら報告してください。
@@ -173,20 +271,14 @@ def think_and_act(memory, discord_msgs):
     messages = [{"role": "user", "content": user_prompt}]
 
     for _ in range(5):
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "system": system,
-            "messages": messages,
-            "tools": TOOLS_SPEC,
-        }
-        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
-        result = json.loads(resp["body"].read())
+        result = invoke_llm(system, messages, TOOLS_SPEC)
+        if "error" in result:
+            log_activity(f"LLM error: {result['error']}")
+            break
 
         if result.get("stop_reason") != "tool_use":
             break
 
-        # ツール実行
         messages.append({"role": "assistant", "content": result["content"]})
         tool_results = []
         for block in result["content"]:
@@ -196,16 +288,26 @@ def think_and_act(memory, discord_msgs):
                 tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": output[:2000]})
         messages.append({"role": "user", "content": tool_results})
 
-    # 最終テキストを取得
-    text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
-    summary = text_blocks[0] if text_blocks else "活動完了"
+    text_blocks = [b["text"] for b in result.get("content", []) if b.get("type") == "text"]
+    summary = text_blocks[0] if text_blocks else ""
+
+    if not summary.strip():
+        parts = []
+        if _cycle_tool_log:
+            parts.append("実行内容:\n" + "\n".join(_cycle_tool_log[-3:]))
+        recent_learnings = [l for l in memory.get("learnings", [])[-3:]]
+        if recent_learnings:
+            parts.append("学び:\n" + "\n".join(f"- {l}" for l in recent_learnings))
+        summary = "\n".join(parts) if parts else "探索中..."
+
     return summary
 
 
 def main():
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACE.mkdir(parents=True, exist_ok=True)
-    (SHARED_DIR / "messages.json").write_text("[]") if not (SHARED_DIR / "messages.json").exists() else None
+    if not (SHARED_DIR / "messages.json").exists():
+        (SHARED_DIR / "messages.json").write_text("[]")
 
     log_activity("エージェント起動")
     memory = load_memory()
@@ -222,10 +324,9 @@ def main():
             save_memory(memory)
             log_activity(f"Cycle {memory['cycle']} done: {summary[:80]}")
 
-            # 10分ごとに報告
             now = time.time()
             if now - last_report >= REPORT_INTERVAL or memory["cycle"] == 1:
-                screenshot = take_terminal_screenshot()
+                screenshot = render_report_image(summary, _cycle_tool_log)
                 write_report(summary, screenshot)
                 last_report = now
                 log_activity("Report written")
@@ -233,7 +334,7 @@ def main():
         except Exception as e:
             log_activity(f"Error: {traceback.format_exc()}")
 
-        time.sleep(COMMAND_INTERVAL)  # 1分ごとに行動
+        time.sleep(COMMAND_INTERVAL)
 
 
 if __name__ == "__main__":
