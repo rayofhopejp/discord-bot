@@ -31,6 +31,10 @@ Parameters:
   SecurityGroupId:
     Type: String
     Description: Existing security group ID
+  ReportInterval:
+    Type: String
+    Default: "600"
+    Description: Report interval in seconds
 
 Resources:
   ECSCluster:
@@ -98,6 +102,8 @@ Resources:
               Value: !Ref TavilyApiKey
             - Name: SHARED_DIR
               Value: /shared
+            - Name: REPORT_INTERVAL
+              Value: !Ref ReportInterval
           LogConfiguration:
             LogDriver: awslogs
             Options:
