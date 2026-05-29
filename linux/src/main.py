@@ -47,7 +47,7 @@ def log_activity(msg):
     print(line, end="")
 
 
-def run_command(cmd, timeout=120):
+def run_command(cmd, timeout=180):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return {"stdout": r.stdout[-2000:], "stderr": r.stderr[-500:], "code": r.returncode}
@@ -291,7 +291,7 @@ def think_and_act(memory, discord_msgs):
     for _ in range(30):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
+            "max_tokens": 32768,
             "system": system,
             "messages": messages,
             "tools": TOOLS_SPEC,
