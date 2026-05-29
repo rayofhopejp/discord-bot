@@ -96,10 +96,6 @@ Resources:
             - SourceVolume: shared
               ContainerPath: /shared
           Environment:
-            - Name: AWS_REGION
-              Value: !Ref AwsRegionName
-            - Name: TAVILY_API_KEY
-              Value: !Ref TavilyApiKey
             - Name: SHARED_DIR
               Value: /shared
             - Name: REPORT_INTERVAL
@@ -124,6 +120,10 @@ Resources:
               Value: !Ref ReportChannel
             - Name: SHARED_DIR
               Value: /shared
+            - Name: AWS_REGION
+              Value: !Ref AwsRegionName
+            - Name: TAVILY_API_KEY
+              Value: !Ref TavilyApiKey
           LogConfiguration:
             LogDriver: awslogs
             Options:
