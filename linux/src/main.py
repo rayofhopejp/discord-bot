@@ -180,7 +180,7 @@ def think_and_act(memory, discord_msgs):
             "messages": messages,
             "tools": TOOLS_SPEC,
         }
-        resp = bedrock.invoke_model(modelId="anthropic.claude-sonnet-4-20250514", body=json.dumps(body))
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
         result = json.loads(resp["body"].read())
 
         if result.get("stop_reason") != "tool_use":
