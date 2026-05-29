@@ -16,6 +16,7 @@ services:
     build: .
     volumes:
       - shared:/shared
+      - workspace:/workspace:ro
       - ./serif.txt:/app/serif.txt:ro
       - ~/.aws:/root/.aws:ro
     environment:
