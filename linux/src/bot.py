@@ -180,6 +180,49 @@ async def on_ready():
     client.loop.create_task(api_proxy_loop())
 
 
+MEMORY_FILE = Path("/workspace/memory.json")
+
+
+def load_agent_history():
+    """エージェントの研究履歴を読み込む"""
+    if MEMORY_FILE.exists():
+        try:
+            mem = json.loads(MEMORY_FILE.read_text())
+            return mem.get("history", [])[-15:]
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def generate_reply(user_message):
+    """過去の研究履歴を参照してコメントに返答する"""
+    history = load_agent_history()
+    context = "\n".join(history) if history else "まだ研究を始めたばかりです"
+
+    system = f"""あなたは自律研究エージェントです。以下はあなたがこれまでに行った研究活動の履歴です。
+ユーザーからの質問やコメントに、この履歴を踏まえて返答してください。簡潔に。
+
+研究履歴:
+{context}"""
+
+    if SERIFU:
+        system += f"\n\n口調参考（この人物になりきって返答）:\n{SERIFU[:2000]}"
+
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 512,
+        "system": system,
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    try:
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
+        result = json.loads(resp["body"].read())
+        return result["content"][0]["text"]
+    except Exception as e:
+        print(f"Reply generation error: {e}")
+        return None
+
+
 @client.event
 async def on_message(message):
     if message.author.bot:
@@ -188,6 +231,10 @@ async def on_message(message):
         return
     push_message(f"{message.author.display_name}: {message.content}")
     await message.add_reaction("👀")
+
+    reply = await asyncio.to_thread(generate_reply, message.content)
+    if reply:
+        await message.reply(reply[:2000])
 
 
 client.run(TOKEN)
