@@ -6,8 +6,10 @@ import re
 import sqlite3
 import traceback
 import base64
+import zlib
 import boto3
 import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from dotenv import load_dotenv
 
 load_dotenv('../.env')
@@ -63,10 +65,10 @@ def get_context(user_id, channel_id):
     )
     recent = cur.fetchall()[::-1]
     cur.execute(
-        "SELECT content FROM messages WHERE user_id = ? AND role = 'user' ORDER BY created_at",
+        "SELECT content FROM messages WHERE user_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 100",
         (user_id,)
     )
-    user_msgs = [r[0] for r in cur.fetchall()]
+    user_msgs = [r[0] for r in cur.fetchall()][::-1]
     conn.close()
     return recent, user_msgs
 
@@ -104,6 +106,52 @@ def fetch_urls(urls):
         return ""
 
 
+def upload_to_excalidraw(elements_json):
+    """Excalidraw elements JSONをexcalidraw.comにアップロードしてシェアリンクを返す"""
+    scene = json.dumps({
+        "type": "excalidraw",
+        "version": 2,
+        "elements": json.loads(elements_json),
+        "appState": {"viewBackgroundColor": "#ffffff"}
+    })
+    data_bytes = scene.encode()
+    file_meta = json.dumps({}).encode()
+
+    # concatBuffers: [version=1 (4B)] [len (4B)] [data] ...
+    def concat(*bufs):
+        total = 4 + sum(4 + len(b) for b in bufs)
+        out = bytearray(total)
+        import struct
+        struct.pack_into('<I', out, 0, 1)
+        offset = 4
+        for b in bufs:
+            struct.pack_into('<I', out, offset, len(b))
+            offset += 4
+            out[offset:offset+len(b)] = b
+            offset += len(b)
+        return bytes(out)
+
+    inner = concat(file_meta, data_bytes)
+    compressed = zlib.compress(inner)
+
+    # AES-GCM 128-bit encryption
+    key = os.urandom(16)
+    iv = os.urandom(12)
+    aesgcm = AESGCM(key)
+    encrypted = aesgcm.encrypt(iv, compressed, None)
+
+    encoding_meta = json.dumps({"version": 2, "compression": "pako@1", "encryption": "AES-GCM"}).encode()
+    payload = concat(encoding_meta, iv, encrypted)
+
+    resp = requests.post("https://json.excalidraw.com/api/v2/post/", data=payload, timeout=15)
+    resp.raise_for_status()
+    file_id = resp.json()["id"]
+
+    # base64url encode the key (no padding)
+    key_b64 = base64.urlsafe_b64encode(key).rstrip(b'=').decode()
+    return f"https://excalidraw.com/#json={file_id},{key_b64}"
+
+
 TOOLS = [
     {
         "name": "web_search",
@@ -115,29 +163,34 @@ TOOLS = [
             },
             "required": ["query"]
         }
+    },
+    {
+        "name": "draw_diagram",
+        "description": "Excalidrawで手書き風の図やダイアグラムを描きます。アーキテクチャ図、フローチャート、シーケンス図、概念図など、視覚的な説明が必要な時に使ってください。elementsはExcalidraw elements形式のJSON配列文字列です。必ずcameraUpdateを最初に入れてください。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "elements": {
+                    "type": "string",
+                    "description": "Excalidraw elements JSON配列文字列。例: [{\"type\":\"cameraUpdate\",\"width\":800,\"height\":600,\"x\":0,\"y\":0},{\"type\":\"rectangle\",\"id\":\"r1\",\"x\":100,\"y\":100,\"width\":200,\"height\":100,\"label\":{\"text\":\"Hello\",\"fontSize\":20}}]"
+                }
+            },
+            "required": ["elements"]
+        }
     }
 ]
 
 
 def merge_consecutive_roles(messages):
-    """同じroleが連続するメッセージをマージしてClaude APIの交互配置要件を満たす"""
+    """同じroleが連続する場合にダミーメッセージを挟んでClaude APIの交互配置要件を満たす"""
     if not messages:
         return messages
     merged = [messages[0]]
     for msg in messages[1:]:
         if msg["role"] == merged[-1]["role"]:
-            # 同じroleが連続 → contentをマージ
-            prev = merged[-1]["content"]
-            curr = msg["content"]
-            if isinstance(prev, str) and isinstance(curr, str):
-                merged[-1]["content"] = prev + "\n" + curr
-            else:
-                # リスト形式の場合
-                prev_list = prev if isinstance(prev, list) else [{"type": "text", "text": prev}]
-                curr_list = curr if isinstance(curr, list) else [{"type": "text", "text": curr}]
-                merged[-1]["content"] = prev_list + curr_list
-        else:
-            merged.append(msg)
+            dummy_role = "assistant" if msg["role"] == "user" else "user"
+            merged.append({"role": dummy_role, "content": "--"})
+        merged.append(msg)
     return merged
 
 
@@ -177,10 +230,10 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     def _invoke(msgs, use_tools=True):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
+            "max_tokens": 4096,
             "messages": msgs,
         }
-        if use_tools and TAVILY_API_KEY:
+        if use_tools:
             body["tools"] = TOOLS
         if system_parts:
             body["system"] = "\n\n---\n\n".join(system_parts)
@@ -199,11 +252,22 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
             if result.get("stop_reason") != "tool_use":
                 break
             tool_block = next(b for b in result["content"] if b["type"] == "tool_use")
-            search_result = tavily_search(tool_block["input"]["query"])
+            tool_name = tool_block["name"]
+
+            if tool_name == "web_search":
+                tool_result = tavily_search(tool_block["input"]["query"])
+            elif tool_name == "draw_diagram":
+                try:
+                    url = upload_to_excalidraw(tool_block["input"]["elements"])
+                    tool_result = f"図を作成しました: {url}"
+                except Exception as e:
+                    tool_result = f"図の作成に失敗しました: {e}"
+            else:
+                tool_result = "Unknown tool"
 
             messages.append({"role": "assistant", "content": result["content"]})
             messages.append({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": tool_block["id"], "content": search_result}
+                {"type": "tool_result", "tool_use_id": tool_block["id"], "content": tool_result}
             ]})
 
             result = _invoke(messages)
