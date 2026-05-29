@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 
+import boto3
 import discord
 from dotenv import load_dotenv
 
@@ -13,7 +14,32 @@ load_dotenv()
 TOKEN = os.getenv("LINUX_BOT_TOKEN") or os.getenv("TOKEN")
 REPORT_CHANNEL = os.getenv("REPORT_CHANNEL", "")
 SHARED_DIR = Path(os.getenv("SHARED_DIR", "/shared"))
-CHECK_INTERVAL = 10  # 10秒ごとに報告チェック
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+CHECK_INTERVAL = 10
+
+SERIFU_PATH = os.getenv("SERIFU_PATH", "/app/serif.txt")
+SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ""
+
+bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+
+
+def rewrite_in_character(text):
+    """報告文をserif.txtの口調に変換"""
+    if not SERIFU:
+        return text
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 512,
+        "system": f"以下のセリフを参考に、この人物の口調・性格になりきって文章を書き換えてください。内容は変えず口調だけ変えること。短めに。\n\nセリフ集:\n{SERIFU[:3000]}",
+        "messages": [{"role": "user", "content": f"以下の報告を口調変換して:\n{text}"}],
+    }
+    try:
+        resp = bedrock.invoke_model(modelId="anthropic.claude-sonnet-4-20250514", body=json.dumps(body))
+        result = json.loads(resp["body"].read())
+        return result["content"][0]["text"]
+    except Exception as e:
+        print(f"Rewrite error: {e}")
+        return text
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -65,6 +91,7 @@ async def report_loop():
             if report and report.get("timestamp") != last_report_time:
                 last_report_time = report["timestamp"]
                 summary = report.get("summary", "活動報告")
+                summary = rewrite_in_character(summary)
                 ts = datetime.fromisoformat(report["timestamp"]).strftime("%H:%M")
                 text = f"\n{summary[:1900]}"
 
