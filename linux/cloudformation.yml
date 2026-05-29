@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Linux autonomous agent on ECS Fargate (agent + bot sidecar with shared volume)
+
+Parameters:
+  LinuxBotToken:
+    Type: String
+    NoEcho: true
+    Description: Discord Bot Token for linux agent
+  AwsRegionName:
+    Type: String
+    Default: us-east-1
+  ReportChannel:
+    Type: String
+    Description: Discord channel ID for agent reports
+  TavilyApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  LinuxImageUri:
+    Type: String
+    Description: Full ECR image URI for linux agent
+  VpcId:
+    Type: String
+    Description: Existing VPC ID (from discord-bot stack)
+  SubnetA:
+    Type: String
+    Description: Existing subnet A
+  SubnetB:
+    Type: String
+    Description: Existing subnet B
+  SecurityGroupId:
+    Type: String
+    Description: Existing security group ID
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AWS::StackName}-cluster"
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}"
+      RetentionInDays: 14
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${AWS::StackName}-task"
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: shared
+      ContainerDefinitions:
+        - Name: agent
+          Image: !Ref LinuxImageUri
+          Essential: true
+          Command: ["python3", "src/main.py"]
+          MountPoints:
+            - SourceVolume: shared
+              ContainerPath: /shared
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AwsRegionName
+            - Name: TAVILY_API_KEY
+              Value: !Ref TavilyApiKey
+            - Name: SHARED_DIR
+              Value: /shared
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: agent
+        - Name: bot
+          Image: !Ref LinuxImageUri
+          Essential: true
+          Command: ["python3", "src/bot.py"]
+          MountPoints:
+            - SourceVolume: shared
+              ContainerPath: /shared
+          Environment:
+            - Name: LINUX_BOT_TOKEN
+              Value: !Ref LinuxBotToken
+            - Name: REPORT_CHANNEL
+              Value: !Ref ReportChannel
+            - Name: SHARED_DIR
+              Value: /shared
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: bot
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref SubnetA
+            - !Ref SubnetB
+          SecurityGroups:
+            - !Ref SecurityGroupId
+
+Outputs:
+  ClusterName:
+    Value: !Ref ECSCluster
+  ServiceName:
+    Value: !GetAtt Service.Name
