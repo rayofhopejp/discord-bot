@@ -34,7 +34,7 @@ def rewrite_in_character(text):
         "messages": [{"role": "user", "content": f"以下の報告を口調変換して:\n{text}"}],
     }
     try:
-        resp = bedrock.invoke_model(modelId="anthropic.claude-sonnet-4-20250514", body=json.dumps(body))
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
         result = json.loads(resp["body"].read())
         return result["content"][0]["text"]
     except Exception as e:
