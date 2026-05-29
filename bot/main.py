@@ -179,6 +179,8 @@ TOOLS_SPEC = [
      "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     {"name": "save_note", "description": "学んだことをメモリに保存",
      "input_schema": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}},
+    {"name": "attach_image", "description": "画像ファイルを次回レポートに添付する（グラフや図を生成した時に使う）",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": "画像ファイルのパス"}}, "required": ["path"]}},
 ]
 
 _cycle_tool_log = []
@@ -205,6 +207,15 @@ def execute_tool(name, inp, memory):
         save_memory(memory)
         _cycle_tool_log.append(f"💾 {inp['note'][:80]}")
         return "Saved."
+    elif name == "attach_image":
+        import shutil
+        src = inp["path"]
+        if os.path.exists(src):
+            dest = str(SHARED_DIR / "report.png")
+            shutil.copy2(src, dest)
+            _cycle_tool_log.append(f"🖼️ {src}")
+            return "Image attached."
+        return "File not found."
     return "Unknown tool"
 
 
@@ -293,33 +304,18 @@ def think_and_act(memory, discord_msgs):
         messages.append({"role": "user", "content": tool_results})
 
     text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
-    conclusion = text_blocks[0] if text_blocks else ""
+    summary = text_blocks[0] if text_blocks else ""
 
-    parts = []
-    if _cycle_tool_log:
-        parts.append("実行内容:\n" + "\n".join(_cycle_tool_log))
-    if conclusion.strip():
-        parts.append("考察:\n" + conclusion)
-    summary = "\n".join(parts) if parts else "探索中..."
-
-    if len(summary) > 500:
-        summary = summarize_text(summary)
+    if not summary.strip():
+        parts = []
+        if _cycle_tool_log:
+            parts.append("実行内容:\n" + "\n".join(_cycle_tool_log[-3:]))
+        recent_learnings = [l for l in memory.get("learnings", [])[-3:]]
+        if recent_learnings:
+            parts.append("学び:\n" + "\n".join(f"- {l}" for l in recent_learnings))
+        summary = "\n".join(parts) if parts else "探索中..."
 
     return summary
-
-
-def summarize_text(text):
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 300,
-        "messages": [{"role": "user", "content": f"以下の研究活動ログを、何をやって何がわかったか簡潔に要約して（300字以内）:\n\n{text[:3000]}"}],
-    }
-    try:
-        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
-        result = json.loads(resp["body"].read())
-        return result["content"][0]["text"]
-    except Exception:
-        return text[:500]
 
 
 def main():
@@ -348,8 +344,11 @@ def main():
             if now - last_report >= REPORT_INTERVAL or memory["cycle"] == 1:
                 recent = memory["history"][-10:]
                 full_summary = "## 最近の研究活動\n" + "\n".join(f"- {h}" for h in recent)
-                screenshot = render_report_image(full_summary, _cycle_tool_log)
+                img_path = str(SHARED_DIR / "report.png")
+                screenshot = img_path if os.path.exists(img_path) else None
                 write_report(full_summary, screenshot)
+                if screenshot:
+                    os.remove(screenshot)
                 last_report = now
                 log_activity("Report written")
 
