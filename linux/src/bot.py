@@ -89,7 +89,7 @@ def rewrite_in_character(text):
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 512,
-        "system": f"以下のセリフを参考に、この人物の口調・性格になりきって文章を書き換えてください。内容は変えず口調だけ変えること。短めに。\n\nセリフ集:\n{SERIFU[:3000]}",
+        "system": f"以下のセリフを参考に、この人物の口調・性格になりきって文章を書き換えてください。内容は変えず要約して口調だけ変えること。短めに。\n\nセリフ集:\n{SERIFU[:3000]}",
         "messages": [{"role": "user", "content": f"以下の報告を口調変換して:\n{text}"}],
     }
     try:
