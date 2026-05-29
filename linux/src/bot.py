@@ -41,7 +41,7 @@ def handle_llm_request(req):
     if req.get("tools"):
         body["tools"] = req["tools"]
     try:
-        resp = bedrock.invoke_model(modelId="us.anthropic.claude-sonnet-4-20250514-v1:0", body=json.dumps(body))
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
         return json.loads(resp["body"].read())
     except Exception as e:
         return {"error": str(e), "content": [], "stop_reason": "error"}
@@ -93,7 +93,7 @@ def rewrite_in_character(text):
         "messages": [{"role": "user", "content": f"以下の報告を口調変換して:\n{text}"}],
     }
     try:
-        resp = bedrock.invoke_model(modelId="us.anthropic.claude-sonnet-4-20250514-v1:0", body=json.dumps(body))
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
         result = json.loads(resp["body"].read())
         return result["content"][0]["text"]
     except Exception as e:
