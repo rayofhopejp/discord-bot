@@ -1,5 +1,6 @@
 """自律成長エージェント - Linuxコンテナ上で自律的に行動し学習する
-API秘密情報はこのコンテナに渡さない。LLM/Tavily呼び出しはbot側に委譲する。
+Bedrock: タスクロールで直接呼び出し
+Tavily: bot経由（APIキーを渡さない）
 """
 import os
 import json
@@ -9,16 +10,21 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+import boto3
 from PIL import Image, ImageDraw, ImageFont
 
 COMMAND_INTERVAL = 60
 SHARED_DIR = Path(os.getenv("SHARED_DIR", "/shared"))
 WORKSPACE = Path("/workspace")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 REPORT_INTERVAL = int(os.getenv("REPORT_INTERVAL", "600"))
 MEMORY_FILE = WORKSPACE / "memory.json"
 LOG_FILE = WORKSPACE / "activity.log"
 
-# API呼び出し用の共有ファイル
+# Bedrock: タスクロール認証で直接利用
+bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+
+# Tavily用の共有ファイル（bot経由）
 API_REQUEST_FILE = SHARED_DIR / "api_request.json"
 API_RESPONSE_FILE = SHARED_DIR / "api_response.json"
 
@@ -49,43 +55,24 @@ def run_command(cmd, timeout=30):
         return {"stdout": "", "stderr": "timeout", "code": -1}
 
 
-def call_api(request):
-    """bot側にAPIリクエストを送り、レスポンスを待つ"""
-    # レスポンスファイルをクリア
+def tavily_search(query):
+    """bot経由でTavily検索（APIキーはbot側のみ保持）"""
     if API_RESPONSE_FILE.exists():
         API_RESPONSE_FILE.unlink()
-    # リクエスト書き込み
-    API_REQUEST_FILE.write_text(json.dumps(request, ensure_ascii=False))
-    # レスポンス待ち (最大60秒)
+    API_REQUEST_FILE.write_text(json.dumps({"type": "tavily_search", "query": query}, ensure_ascii=False))
     for _ in range(120):
         time.sleep(0.5)
         if API_RESPONSE_FILE.exists():
             try:
                 resp = json.loads(API_RESPONSE_FILE.read_text())
                 API_RESPONSE_FILE.unlink()
-                return resp
+                return resp.get("result", "検索失敗")
             except (json.JSONDecodeError, OSError):
                 continue
-    return {"error": "API timeout"}
-
-
-def invoke_llm(system, messages, tools=None):
-    """bot経由でLLMを呼び出す"""
-    req = {"type": "llm", "system": system, "messages": messages}
-    if tools:
-        req["tools"] = tools
-    resp = call_api(req)
-    return resp
-
-
-def tavily_search(query):
-    """bot経由でTavily検索"""
-    resp = call_api({"type": "tavily_search", "query": query})
-    return resp.get("result", "検索失敗")
+    return "検索タイムアウト"
 
 
 def browse_url(url):
-    """Playwrightでページを開いてテキストを取得"""
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -271,10 +258,15 @@ def think_and_act(memory, discord_msgs):
     messages = [{"role": "user", "content": user_prompt}]
 
     for _ in range(5):
-        result = invoke_llm(system, messages, TOOLS_SPEC)
-        if "error" in result:
-            log_activity(f"LLM error: {result['error']}")
-            break
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "system": system,
+            "messages": messages,
+            "tools": TOOLS_SPEC,
+        }
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-opus-4-8", body=json.dumps(body))
+        result = json.loads(resp["body"].read())
 
         if result.get("stop_reason") != "tool_use":
             break
@@ -288,7 +280,7 @@ def think_and_act(memory, discord_msgs):
                 tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": output[:2000]})
         messages.append({"role": "user", "content": tool_results})
 
-    text_blocks = [b["text"] for b in result.get("content", []) if b.get("type") == "text"]
+    text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
     summary = text_blocks[0] if text_blocks else ""
 
     if not summary.strip():
