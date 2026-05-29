@@ -5,11 +5,9 @@ services:
     volumes:
       - shared:/shared
       - workspace:/workspace
-      - ~/.aws:/root/.aws:ro
     environment:
-      - AWS_REGION=${AWS_REGION}
-      - TAVILY_API_KEY=${TAVILY_API_KEY}
       - SHARED_DIR=/shared
+      - REPORT_INTERVAL=${REPORT_INTERVAL:-600}
     command: ["python3", "src/main.py"]
     restart: unless-stopped
 
@@ -25,6 +23,7 @@ services:
       - REPORT_CHANNEL=${REPORT_CHANNEL}
       - SHARED_DIR=/shared
       - AWS_REGION=${AWS_REGION}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
     command: ["python3", "src/bot.py"]
     restart: unless-stopped
     depends_on:
