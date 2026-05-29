@@ -1,246 +1,370 @@
-"""Discord Bot - エージェントの報告送信 + APIプロキシ（秘密情報はこちらのみ保持）"""
+"""自律成長エージェント - Linuxコンテナ上で自律的に行動し学習する
+Bedrock: タスクロールで直接呼び出し
+Tavily: bot経由（APIキーを渡さない）
+"""
 import os
 import json
-import asyncio
-from pathlib import Path
+import time
+import subprocess
+import traceback
 from datetime import datetime
+from pathlib import Path
 
 import boto3
-import requests
-import discord
-from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
 
-load_dotenv()
-
-TOKEN = os.getenv("LINUX_BOT_TOKEN") or os.getenv("TOKEN")
-REPORT_CHANNEL = os.getenv("REPORT_CHANNEL", "")
+COMMAND_INTERVAL = 60
 SHARED_DIR = Path(os.getenv("SHARED_DIR", "/shared"))
+WORKSPACE = Path("/workspace")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-CHECK_INTERVAL = 5
+REPORT_INTERVAL = int(os.getenv("REPORT_INTERVAL", "600"))
+MEMORY_FILE = WORKSPACE / "memory.json"
+LOG_FILE = WORKSPACE / "activity.log"
 
-SERIFU_PATH = os.getenv("SERIFU_PATH", "/app/serif.txt")
-SERIFU = open(SERIFU_PATH).read().strip() if os.path.exists(SERIFU_PATH) else ""
+# Bedrock: タスクロール認証で直接利用
+bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
+# Tavily用の共有ファイル（bot経由）
 API_REQUEST_FILE = SHARED_DIR / "api_request.json"
 API_RESPONSE_FILE = SHARED_DIR / "api_response.json"
 
-bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
-
-# --- APIプロキシ ---
-
-def handle_llm_request(req):
-    """LLMリクエストを処理"""
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1024,
-        "system": req.get("system", ""),
-        "messages": req["messages"],
-    }
-    if req.get("tools"):
-        body["tools"] = req["tools"]
-    try:
-        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
-        return json.loads(resp["body"].read())
-    except Exception as e:
-        return {"error": str(e), "content": [], "stop_reason": "error"}
-
-
-def handle_tavily_request(req):
-    """Tavily検索リクエストを処理"""
-    if not TAVILY_API_KEY:
-        return {"result": "Tavily API key not configured"}
-    try:
-        resp = requests.post("https://api.tavily.com/search",
-                             json={"api_key": TAVILY_API_KEY, "query": req["query"], "max_results": 3})
-        results = resp.json().get("results", [])
-        text = "\n".join(f"- {r['title']}: {r.get('content','')[:200]}" for r in results)
-        return {"result": text}
-    except Exception as e:
-        return {"result": f"Search error: {e}"}
-
-
-def process_api_request():
-    """共有ボリュームのAPIリクエストを処理"""
-    if not API_REQUEST_FILE.exists():
-        return
-    try:
-        req = json.loads(API_REQUEST_FILE.read_text())
-        API_REQUEST_FILE.unlink()
-    except (json.JSONDecodeError, OSError):
-        return
-
-    if req.get("type") == "llm":
-        result = handle_llm_request(req)
-    elif req.get("type") == "tavily_search":
-        result = handle_tavily_request(req)
-    else:
-        result = {"error": "Unknown request type"}
-
-    API_RESPONSE_FILE.write_text(json.dumps(result, ensure_ascii=False))
-
-
-# --- Discord ---
-
-def rewrite_in_character(text):
-    if not SERIFU:
-        return text
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 512,
-        "system": f"以下のセリフを参考に、この人物の口調・性格になりきって文章を書き換えてください。内容は変えず要約して口調だけ変えること。短めに。\n\nセリフ集:\n{SERIFU[:3000]}",
-        "messages": [{"role": "user", "content": f"以下の報告を口調変換して:\n{text}"}],
-    }
-    try:
-        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
-        result = json.loads(resp["body"].read())
-        return result["content"][0]["text"]
-    except Exception as e:
-        print(f"Rewrite error: {e}")
-        return text
-
-
-intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
-last_report_time = None
-
-
-def read_report():
-    report_file = SHARED_DIR / "report.json"
-    if not report_file.exists():
-        return None
-    try:
-        return json.loads(report_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def push_message(content):
-    msg_file = SHARED_DIR / "messages.json"
-    try:
-        msgs = json.loads(msg_file.read_text()) if msg_file.exists() else []
-    except (json.JSONDecodeError, OSError):
-        msgs = []
-    msgs.append(content)
-    msgs = msgs[-20:]
-    msg_file.write_text(json.dumps(msgs, ensure_ascii=False))
-
-
-async def api_proxy_loop():
-    """APIリクエストを0.3秒ごとにポーリング処理"""
-    while not client.is_closed():
-        try:
-            process_api_request()
-        except Exception as e:
-            print(f"API proxy error: {e}")
-        await asyncio.sleep(0.3)
-
-
-async def report_loop():
-    global last_report_time
-    await client.wait_until_ready()
-
-    if not REPORT_CHANNEL:
-        print("REPORT_CHANNEL not set, report loop disabled")
-        return
-
-    channel = client.get_channel(int(REPORT_CHANNEL))
-    if not channel:
-        print(f"Channel {REPORT_CHANNEL} not found")
-        return
-
-    while not client.is_closed():
-        try:
-            report = read_report()
-            if report and report.get("timestamp") != last_report_time:
-                last_report_time = report["timestamp"]
-                summary = report.get("summary", "活動報告")
-                summary = rewrite_in_character(summary)
-                ts = datetime.fromisoformat(report["timestamp"]).strftime("%H:%M")
-                text = f"\n{summary[:1900]}"
-
-                screenshot = report.get("screenshot")
-                if screenshot and Path(screenshot).exists():
-                    await channel.send(text, file=discord.File(screenshot))
-                else:
-                    await channel.send(text)
-        except Exception as e:
-            print(f"Report loop error: {e}")
-
-        await asyncio.sleep(CHECK_INTERVAL)
-
-
-@client.event
-async def on_ready():
-    SHARED_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Linux Bot ready: {client.user}")
-    client.loop.create_task(report_loop())
-    client.loop.create_task(api_proxy_loop())
-
-
-MEMORY_FILE = Path("/workspace/memory.json")
-
-
-def load_agent_history():
-    """エージェントの研究履歴とメモを読み込む"""
+def load_memory():
     if MEMORY_FILE.exists():
-        try:
-            mem = json.loads(MEMORY_FILE.read_text())
-            history = mem.get("history", [])[-15:]
-            learnings = mem.get("learnings", [])[-15:]
-            return history, learnings
-        except (json.JSONDecodeError, OSError):
-            pass
-    return [], []
+        return json.loads(MEMORY_FILE.read_text())
+    return {"goals": [], "learnings": [], "history": [], "cycle": 0}
 
 
-def generate_reply(user_message):
-    """過去の研究履歴を参照してコメントに返答する"""
-    history, learnings = load_agent_history()
-    history_text = "\n".join(history) if history else "まだなし"
-    learnings_text = "\n".join(f"- {l}" for l in learnings) if learnings else "まだなし"
+def save_memory(memory):
+    MEMORY_FILE.write_text(json.dumps(memory, ensure_ascii=False, indent=2))
 
-    system = f"""あなたは自律研究エージェントです。以下はあなたの研究活動の記録です。
-ユーザーからの質問やコメントに、この記録を踏まえて返答してください。簡潔に。
 
-研究履歴:
-{history_text}
+def log_activity(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}\n"
+    with open(LOG_FILE, "a") as f:
+        f.write(line)
+    print(line, end="")
 
-研究メモ（学んだこと）:
-{learnings_text}"""
 
-    if SERIFU:
-        system += f"\n\n口調参考（この人物になりきって返答）:\n{SERIFU[:2000]}"
-
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 512,
-        "system": system,
-        "messages": [{"role": "user", "content": user_message}],
-    }
+def run_command(cmd, timeout=120):
     try:
-        resp = bedrock.invoke_model(modelId="global.anthropic.claude-sonnet-4-6", body=json.dumps(body))
-        result = json.loads(resp["body"].read())
-        return result["content"][0]["text"]
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return {"stdout": r.stdout[-2000:], "stderr": r.stderr[-500:], "code": r.returncode}
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": "timeout", "code": -1}
+
+
+def tavily_search(query):
+    """bot経由でTavily検索（APIキーはbot側のみ保持）"""
+    if API_RESPONSE_FILE.exists():
+        API_RESPONSE_FILE.unlink()
+    API_REQUEST_FILE.write_text(json.dumps({"type": "tavily_search", "query": query}, ensure_ascii=False))
+    for _ in range(120):
+        time.sleep(0.5)
+        if API_RESPONSE_FILE.exists():
+            try:
+                resp = json.loads(API_RESPONSE_FILE.read_text())
+                API_RESPONSE_FILE.unlink()
+                return resp.get("result", "検索失敗")
+            except (json.JSONDecodeError, OSError):
+                continue
+    return "検索タイムアウト"
+
+
+def browse_url(url):
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(url, timeout=15000)
+            page.wait_for_load_state("networkidle", timeout=10000)
+            text = page.inner_text("body")[:3000]
+            browser.close()
+            return text
     except Exception as e:
-        print(f"Reply generation error: {e}")
-        return None
+        return f"Error: {e}"
 
 
-@client.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    if REPORT_CHANNEL and str(message.channel.id) != REPORT_CHANNEL:
-        return
-    push_message(f"{message.author.display_name}: {message.content}")
-    await message.add_reaction("👀")
+# --- 画像生成 (Pillow) ---
 
-    reply = await asyncio.to_thread(generate_reply, message.content)
-    if reply:
-        await message.reply(reply[:2000])
+def _get_font(size=14):
+    ttc_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    if os.path.exists(ttc_path):
+        return ImageFont.truetype(ttc_path, size, index=0)
+    for path in ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
 
 
-client.run(TOKEN)
+def render_report_image(summary, tool_log):
+    width, padding = 800, 20
+    font = _get_font(14)
+    font_title = _get_font(18)
+    line_height = 20
+    title_height = 30
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    title = f"🤖 Agent Report - {ts}"
+
+    summary_lines = _wrap_text(f"📝 {summary}", width - padding * 2, font)
+    log_lines = []
+    for entry in tool_log[-8:]:
+        log_lines.extend(_wrap_text(f"  {entry}", width - padding * 2, font))
+
+    total_lines = 2 + len(summary_lines) + 1 + 1 + len(log_lines)
+    height = max(400, padding * 2 + title_height + total_lines * line_height + 40)
+
+    img = Image.new("RGB", (width, height), color=(26, 26, 46))
+    draw = ImageDraw.Draw(img)
+    y = padding
+
+    draw.text((padding, y), title, fill=(0, 255, 255), font=font_title)
+    y += title_height + 10
+    draw.line([(padding, y), (width - padding, y)], fill=(0, 255, 255), width=1)
+    y += 10
+
+    draw.text((padding, y), "Summary:", fill=(79, 195, 247), font=font)
+    y += line_height
+    for line in summary_lines:
+        draw.text((padding + 10, y), line, fill=(238, 238, 238), font=font)
+        y += line_height
+
+    y += 10
+    draw.line([(padding, y), (width - padding, y)], fill=(50, 50, 80), width=1)
+    y += 10
+
+    draw.text((padding, y), "Activity:", fill=(79, 195, 247), font=font)
+    y += line_height
+    for line in log_lines:
+        color = (0, 255, 100) if line.strip().startswith("$") else (180, 180, 180)
+        draw.text((padding + 10, y), line, fill=color, font=font)
+        y += line_height
+
+    path = str(SHARED_DIR / "report.png")
+    img.save(path)
+    return path
+
+
+def _wrap_text(text, max_width, font):
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            lines.append("")
+            continue
+        current = ""
+        for char in paragraph:
+            test = current + char
+            bbox = font.getbbox(test)
+            if bbox[2] > max_width:
+                lines.append(current)
+                current = char
+            else:
+                current = test
+        if current:
+            lines.append(current)
+    return lines[:25]
+
+
+# --- ツール ---
+
+TOOLS_SPEC = [
+    {"name": "run_command", "description": "Linuxコマンドを実行する",
+     "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}},
+    {"name": "web_search", "description": "Tavilyで検索する",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "browse_url", "description": "URLを開いてテキストを取得",
+     "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+    {"name": "save_note", "description": "学んだことをメモリに保存",
+     "input_schema": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}},
+    {"name": "attach_image", "description": "画像ファイルを次回レポートに添付する（グラフや図を生成した時に使う）",
+     "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": "画像ファイルのパス"}}, "required": ["path"]}},
+]
+
+_cycle_tool_log = []
+
+
+def execute_tool(name, inp, memory):
+    global _cycle_tool_log
+    if name == "run_command":
+        r = run_command(inp["cmd"])
+        output = r["stdout"][:100] or r["stderr"][:100]
+        _cycle_tool_log.append(f"$ {inp['cmd']}\n    → {output}")
+        return json.dumps(r)
+    elif name == "web_search":
+        result = tavily_search(inp["query"])
+        _cycle_tool_log.append(f"🔍 {inp['query']}\n    → {result[:80]}")
+        return result
+    elif name == "browse_url":
+        text = browse_url(inp["url"])
+        _cycle_tool_log.append(f"🌐 {inp['url']}\n    → {text[:80]}")
+        return text
+    elif name == "save_note":
+        memory["learnings"].append(inp["note"])
+        memory["learnings"] = memory["learnings"][-50:]
+        save_memory(memory)
+        _cycle_tool_log.append(f"💾 {inp['note'][:80]}")
+        return "Saved."
+    elif name == "attach_image":
+        import shutil
+        src = inp["path"]
+        if os.path.exists(src):
+            dest = str(SHARED_DIR / "report.png")
+            shutil.copy2(src, dest)
+            _cycle_tool_log.append(f"🖼️ {src}")
+            return "Image attached."
+        return "File not found."
+    return "Unknown tool"
+
+
+def get_discord_messages():
+    msg_file = SHARED_DIR / "messages.json"
+    if msg_file.exists():
+        msgs = json.loads(msg_file.read_text())
+        msg_file.write_text("[]")
+        return msgs
+    return []
+
+
+def write_report(summary, screenshot_path=None):
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "summary": summary,
+        "screenshot": screenshot_path,
+    }
+    (SHARED_DIR / "report.json").write_text(json.dumps(report, ensure_ascii=False))
+
+
+def think_and_act(memory, discord_msgs):
+    global _cycle_tool_log
+    _cycle_tool_log = []
+
+    system = """あなたはLinuxコンテナ上で動く自律研究エージェントです。
+数学やプログラミングの研究・学習に集中してください。
+
+研究テーマ例:
+- 数学: 数論、グラフ理論、組合せ論、確率論、アルゴリズムの証明
+- プログラミング: データ構造の実装、アルゴリズム設計、言語処理系、最適化問題
+- 実験: Pythonでアルゴリズムを実装して検証、計算量の実測、数学的予想の数値実験
+
+やること:
+- 自分でテーマを選び、コードを書いて実験・検証する
+- 定理や予想を調べ、自分なりに理解・証明を試みる
+- 実装して動かし、結果を考察する
+
+重要:
+- 計画を立てるな。即座にコードを書いて保存・実行しろ。
+- コードは /workspace/ にファイルとして保存してから python3 /workspace/xxx.py で実行する。
+- python3 -c でインラインコードを書いてもよいが、長いコードはファイルに保存すること。
+
+禁止:
+- serif.txt やローカルファイルの分析（これは研究ではない）
+- rm -rf / 等の破壊的コマンド
+- 「次のサイクルでやる」という先送り（今やれ）
+
+ルール:
+- 1サイクルで最大30回までツールを使える。30回に到達する前にコードの保存を確認すること。
+- 学んだことはsave_noteで記録する
+- 毎回、何を研究したか・何を発見したかをまとめる
+- コードや成果物は必ず /workspace/ に保存すること（ここだけが永続化される）
+- 前のサイクルで作ったファイルは /workspace/ にあるので、ls /workspace/ で確認してから作業を始める"""
+
+    learnings = "\n".join(f"- {l}" for l in memory["learnings"][-20:]) if memory["learnings"] else "まだなし"
+    recent_history = "\n".join(memory["history"][-5:]) if memory["history"] else "初回起動"
+
+    user_prompt = f"""サイクル #{memory['cycle'] + 1}
+
+過去の学び:
+{learnings}
+
+最近の活動:
+{recent_history}
+"""
+    if discord_msgs:
+        user_prompt += f"\nDiscordからのメッセージ:\n" + "\n".join(f"- {m}" for m in discord_msgs)
+    user_prompt += "\n\n次に何をしますか？好奇心を持って探索してください。"
+
+    messages = [{"role": "user", "content": user_prompt}]
+
+    for _ in range(30):
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "system": system,
+            "messages": messages,
+            "tools": TOOLS_SPEC,
+        }
+        resp = bedrock.invoke_model(modelId="global.anthropic.claude-opus-4-7", body=json.dumps(body))
+        result = json.loads(resp["body"].read())
+
+        if result.get("stop_reason") != "tool_use":
+            break
+
+        messages.append({"role": "assistant", "content": result["content"]})
+        tool_results = []
+        for block in result["content"]:
+            if block["type"] == "tool_use":
+                log_activity(f"Tool: {block['name']}({json.dumps(block['input'], ensure_ascii=False)[:100]})")
+                output = execute_tool(block["name"], block["input"], memory)
+                tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": output[:2000]})
+        messages.append({"role": "user", "content": tool_results})
+
+    text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
+    summary = text_blocks[0] if text_blocks else ""
+
+    if not summary.strip():
+        parts = []
+        if _cycle_tool_log:
+            parts.append("実行内容:\n" + "\n".join(_cycle_tool_log[-3:]))
+        recent_learnings = [l for l in memory.get("learnings", [])[-3:]]
+        if recent_learnings:
+            parts.append("学び:\n" + "\n".join(f"- {l}" for l in recent_learnings))
+        summary = "\n".join(parts) if parts else "探索中..."
+
+    return summary
+
+
+def main():
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    if not (SHARED_DIR / "messages.json").exists():
+        (SHARED_DIR / "messages.json").write_text("[]")
+
+    log_activity("エージェント起動")
+    memory = load_memory()
+    write_report("エージェント起動しました。研究を開始します。", None)
+    last_report = 0
+
+    while True:
+        try:
+            discord_msgs = get_discord_messages()
+            summary = think_and_act(memory, discord_msgs)
+
+            memory["cycle"] += 1
+            memory["history"].append(f"Cycle {memory['cycle']}: {summary}")
+            memory["history"] = memory["history"][-30:]
+            save_memory(memory)
+            log_activity(f"Cycle {memory['cycle']} done: {summary[:80]}")
+
+            now = time.time()
+            if now - last_report >= REPORT_INTERVAL or memory["cycle"] == 1:
+                recent = memory["history"][-10:]
+                full_summary = "## 最近の研究活動\n" + "\n".join(f"- {h}" for h in recent)
+                img_path = str(SHARED_DIR / "report.png")
+                screenshot = img_path if os.path.exists(img_path) else None
+                write_report(full_summary, screenshot)
+                if screenshot:
+                    os.remove(screenshot)
+                last_report = now
+                log_activity("Report written")
+
+        except Exception as e:
+            log_activity(f"Error: {traceback.format_exc()}")
+
+        time.sleep(COMMAND_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
