@@ -246,6 +246,7 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
     # ValidationException時は履歴を削って再試行
     try:
         result = _invoke(messages)
+        excalidraw_urls = []
 
         # Handle tool use (最大2回まで)
         for _ in range(2):
@@ -259,6 +260,7 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
             elif tool_name == "draw_diagram":
                 try:
                     url = upload_to_excalidraw(tool_block["input"]["elements"])
+                    excalidraw_urls.append(url)
                     tool_result = f"図を作成しました: {url}"
                 except Exception as e:
                     tool_result = f"図の作成に失敗しました: {e}"
@@ -275,11 +277,15 @@ def ask_claude(user_id, channel_id, prompt, username, images=None, message_conte
         if 'ValidationException' in str(type(e).__name__):
             # 履歴を捨ててtools無しで再試行（tool_useループを避ける）
             result = _invoke([{"role": "user", "content": user_content}], use_tools=False)
+            excalidraw_urls = []
         else:
             raise
 
     text_blocks = [b["text"] for b in result["content"] if b["type"] == "text"]
-    return text_blocks[0] if text_blocks else "難しいこと聞きすぎ！！わかんないや😂"
+    reply = text_blocks[0] if text_blocks else ""
+    if excalidraw_urls:
+        reply = (reply + "\n" + "\n".join(excalidraw_urls)).strip()
+    return reply or "難しいこと聞きすぎ！！わかんないや😂"
 
 
 def pick_reaction(text):
