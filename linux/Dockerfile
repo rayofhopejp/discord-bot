@@ -1,7 +1,7 @@
 FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    vim htop tree jq \
+    vim htop tree jq fonts-dejavu-core fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
