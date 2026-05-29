@@ -261,7 +261,9 @@ def think_and_act(memory, discord_msgs):
 ルール:
 - 1サイクルで最大5回までツールを使える
 - 学んだことはsave_noteで記録する
-- 毎回、何を研究したか・何を発見したかをまとめる"""
+- 毎回、何を研究したか・何を発見したかをまとめる
+- コードや成果物は必ず /workspace/ に保存すること（ここだけが永続化される）
+- 前のサイクルで作ったファイルは /workspace/ にあるので、ls /workspace/ で確認してから作業を始める"""
 
     learnings = "\n".join(f"- {l}" for l in memory["learnings"][-20:]) if memory["learnings"] else "まだなし"
     recent_history = "\n".join(memory["history"][-5:]) if memory["history"] else "初回起動"
