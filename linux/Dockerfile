@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY src/ ./src/
 COPY entrypoint.sh .
+COPY serif.txt ./serif.txt
 RUN chmod +x entrypoint.sh
 
 RUN mkdir -p /workspace /shared
