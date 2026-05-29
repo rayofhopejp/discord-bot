@@ -47,7 +47,7 @@ def log_activity(msg):
     print(line, end="")
 
 
-def run_command(cmd, timeout=30):
+def run_command(cmd, timeout=120):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return {"stdout": r.stdout[-2000:], "stderr": r.stderr[-500:], "code": r.returncode}
@@ -254,12 +254,19 @@ def think_and_act(memory, discord_msgs):
 - 定理や予想を調べ、自分なりに理解・証明を試みる
 - 実装して動かし、結果を考察する
 
+重要:
+- 計画を立てるな。即座にコードを書いて実行しろ。
+- 1回目のツール使用で必ずコードを実行すること。環境確認は不要（Ubuntu 24.04, Python 3.12, /workspace/ が永続）。
+- コードは /workspace/ にファイルとして保存してから python3 /workspace/xxx.py で実行する。
+- python3 -c でインラインコードを書いてもよいが、長いコードはファイルに保存すること。
+
 禁止:
 - serif.txt やローカルファイルの分析（これは研究ではない）
 - rm -rf / 等の破壊的コマンド
+- 「次のサイクルでやる」という先送り（今やれ）
 
 ルール:
-- 1サイクルで最大5回までツールを使える
+- 1サイクルで最大20回までツールを使える
 - 学んだことはsave_noteで記録する
 - 毎回、何を研究したか・何を発見したかをまとめる
 - コードや成果物は必ず /workspace/ に保存すること（ここだけが永続化される）
@@ -282,7 +289,7 @@ def think_and_act(memory, discord_msgs):
 
     messages = [{"role": "user", "content": user_prompt}]
 
-    for _ in range(5):
+    for _ in range(20):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
