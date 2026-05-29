@@ -43,9 +43,6 @@ Resources:
       PerformanceMode: generalPurpose
       ThroughputMode: bursting
       Encrypted: true
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-workspace"
 
   EFSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
